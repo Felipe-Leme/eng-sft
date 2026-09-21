@@ -55,7 +55,7 @@ jobs:
                     - os: windows-latest
                       target: x86_64-pc-windows-msvc
                       BUILD_PROFILE: release
-                      BINARY_NAME: eng-sft.exe
+                      BINARY_NAME: eng-sft
         steps:
           - name: Checkout repository
             uses: actions/checkout@v6
