@@ -1,0 +1,8 @@
+[alias]
+pedantic = "clippy --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo"
+
+lint-fmt = "fmt --all"
+lint-clippy = "clippy --workspace --all-targets --all-features --fix --allow-dirty --allow-staged"
+
+r = ["run", "--all-features"]
+rr = ["run", "--release", "--all-features"]

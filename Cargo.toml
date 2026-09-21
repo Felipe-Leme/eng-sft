@@ -1,0 +1,11 @@
+[package]
+name = "eng-sft"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+criterion = "0.8.2"
+rand = "0.10.3"
