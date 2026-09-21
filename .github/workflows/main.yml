@@ -47,12 +47,15 @@ jobs:
                     - os: ubuntu-latest
                       target: x86_64-unknown-linux-gnu
                       BUILD_PROFILE: release
+                      BINARY_NAME: eng-sft
                     - os: macos-latest
                       target: aarch64-apple-darwin
                       BUILD_PROFILE: release
+                      BINARY_NAME: eng-sft
                     - os: windows-latest
                       target: x86_64-pc-windows-msvc
                       BUILD_PROFILE: release
+                      BINARY_NAME: eng-sft.exe
         steps:
           - name: Checkout repository
             uses: actions/checkout@v6
@@ -71,4 +74,4 @@ jobs:
             run: cargo test --workspace --target ${{ matrix.target }} --profile ${{ matrix.BUILD_PROFILE }}
 
           - name: Build release binaries (${{ matrix.target }})
-            run: cargo build --workspace --bin --target ${{ matrix.target }} --profile ${{ matrix.BUILD_PROFILE }}
+            run: cargo build --workspace --bin ${{ matrix.BINARY_NAME }} --target ${{ matrix.target }} --profile ${{ matrix.BUILD_PROFILE }}
