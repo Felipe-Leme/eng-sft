@@ -71,4 +71,4 @@ jobs:
             run: cargo test --workspace --target ${{ matrix.target }} --profile ${{ matrix.BUILD_PROFILE }}
 
           - name: Build release binaries (${{ matrix.target }})
-            run: cargo build --workspace --bin --target (${{ matrix.target }}) --profile ${{ matrix.BUILD_PROFILE }}
+            run: cargo build --workspace --bin --target ${{ matrix.target }} --profile ${{ matrix.BUILD_PROFILE }}
