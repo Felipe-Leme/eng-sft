@@ -1,41 +1,42 @@
+use std::marker::PhantomData;
+
 use crate::{domain::strategy::TallyStrategy, error::ElectionError};
 
-pub struct Election<S: TallyStrategy> {
+pub struct Open;
+pub struct Closed;
+
+pub struct Election<S: TallyStrategy, State> {
     strategy: S,
     votes: Vec<S::Vote>,
-    is_closed: bool,
+    _state: PhantomData<State>,
 }
 
-impl<S: TallyStrategy> Election<S> {
+impl<S: TallyStrategy> Election<S, Open> {
     pub fn new(strategy: S) -> Self {
         Self {
             strategy,
             votes: Vec::new(),
-            is_closed: false,
+            _state: PhantomData,
         }
     }
 
     pub fn cast_vote(&mut self, vote: S::Vote) -> Result<(), ElectionError> {
-        if self.is_closed {
-            return Err(ElectionError::ElectionClosed);
-        }
-
         self.strategy.validate(&vote)?;
-
         self.votes.push(vote);
-
         Ok(())
     }
 
-    pub fn close(&mut self) {
-        self.is_closed = true;
-    }
-
-    pub fn compute_result(&self) -> Result<S::OutCome, ElectionError> {
-        if !self.is_closed {
-            return Err(ElectionError::ElectionStillOpen);
+    pub fn close(self) -> Election<S, Closed> {
+        Election {
+            strategy: self.strategy,
+            votes: self.votes,
+            _state: PhantomData,
         }
+    }
+}
 
+impl<S: TallyStrategy> Election<S, Closed> {
+    pub fn compute_result(&self) -> Result<S::OutCome, ElectionError> {
         self.strategy.tally(&self.votes)
     }
 }
@@ -90,29 +91,12 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_vote_after_close() {
-        let mut election = Election::new(MockStrategy);
-        election.close();
-        assert_eq!(election.cast_vote(5), Err(ElectionError::ElectionClosed));
-        assert_eq!(election.votes.len(), 0);
-    }
-
-    #[test]
-    fn test_prevent_tally_while_open() {
-        let election = Election::new(MockStrategy);
-        assert_eq!(
-            election.compute_result(),
-            Err(ElectionError::ElectionStillOpen)
-        );
-    }
-
-    #[test]
     fn test_failed_tally() {
-        let mut election = Election::new(MockStrategy);
-        election.close();
+        let election = Election::new(MockStrategy);
+        let closed_election = election.close();
 
         assert_matches!(
-            election.compute_result(),
+            closed_election.compute_result(),
             Err(ElectionError::TallyFailed(_))
         )
     }
@@ -123,8 +107,8 @@ mod tests {
         election.cast_vote(5).unwrap();
         election.cast_vote(20).unwrap();
 
-        election.close();
+        let closed_election = election.close();
 
-        assert_eq!(election.compute_result(), Ok(25));
+        assert_eq!(closed_election.compute_result(), Ok(25));
     }
 }
