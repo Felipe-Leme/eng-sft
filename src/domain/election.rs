@@ -36,7 +36,7 @@ impl<S: TallyStrategy> Election<S, Open> {
 }
 
 impl<S: TallyStrategy> Election<S, Closed> {
-    pub fn compute_result(&self) -> Result<S::OutCome, ElectionError> {
+    pub fn compute_result(&self) -> Result<S::Outcome, ElectionError> {
         self.strategy.tally(&self.votes)
     }
 }
@@ -51,7 +51,7 @@ mod tests {
 
     impl TallyStrategy for MockStrategy {
         type Vote = u32;
-        type OutCome = u32;
+        type Outcome = u32;
 
         fn validate(&self, vote: &Self::Vote) -> Result<(), ElectionError> {
             if *vote == 0 {
@@ -63,7 +63,7 @@ mod tests {
             }
         }
 
-        fn tally(&self, votes: &[Self::Vote]) -> Result<Self::OutCome, ElectionError> {
+        fn tally(&self, votes: &[Self::Vote]) -> Result<Self::Outcome, ElectionError> {
             let total = votes.iter().sum();
 
             if total == 0 {

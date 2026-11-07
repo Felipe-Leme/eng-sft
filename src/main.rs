@@ -10,7 +10,7 @@ struct MockStrategy;
 
 impl TallyStrategy for MockStrategy {
     type Vote = u32;
-    type OutCome = u32;
+    type Outcome = u32;
 
     fn validate(&self, vote: &Self::Vote) -> Result<(), ElectionError> {
         if *vote == 0 {
@@ -22,7 +22,7 @@ impl TallyStrategy for MockStrategy {
         }
     }
 
-    fn tally(&self, votes: &[Self::Vote]) -> Result<Self::OutCome, ElectionError> {
+    fn tally(&self, votes: &[Self::Vote]) -> Result<Self::Outcome, ElectionError> {
         let total = votes.iter().sum();
 
         if total == 0 {
