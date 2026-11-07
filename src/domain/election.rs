@@ -12,7 +12,7 @@ pub struct Election<S: TallyStrategy, State> {
 }
 
 impl<S: TallyStrategy> Election<S, Open> {
-    pub fn new(strategy: S) -> Self {
+    pub const fn new(strategy: S) -> Self {
         Self {
             strategy,
             votes: Vec::new(),
@@ -98,7 +98,7 @@ mod tests {
         assert_matches!(
             closed_election.compute_result(),
             Err(ElectionError::TallyFailed(_))
-        )
+        );
     }
 
     #[test]
