@@ -1,54 +1,52 @@
-use crate::{
-    domain::{election::Election, strategy::TallyStrategy},
-    error::ElectionError,
-};
+use crate::domain::academic::{AcademicElectionBuilder, AcademicOutcome, Slate};
 
 mod domain;
 mod error;
 
-struct MockStrategy;
-
-impl TallyStrategy for MockStrategy {
-    type Vote = u32;
-    type OutCome = u32;
-
-    fn validate(&self, vote: &Self::Vote) -> Result<(), ElectionError> {
-        if *vote == 0 {
-            Err(ElectionError::InvalidVote(
-                "Vote cannot be 0 in this instance".into(),
-            ))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn tally(&self, votes: &[Self::Vote]) -> Result<Self::OutCome, ElectionError> {
-        let total = votes.iter().sum();
-
-        if total == 0 {
-            Err(ElectionError::TallyFailed(
-                "Tally cannot be 0 in this instance".into(),
-            ))
-        } else {
-            Ok(total)
-        }
-    }
-}
-
 fn main() {
-    let mut election = Election::new(MockStrategy);
-
-    for idx in 1..10 {
-        match election.cast_vote(idx) {
-            Ok(()) => println!("pililili"),
-            Err(failed) => eprintln!("ERROR: {failed}"),
+    let mut election = match AcademicElectionBuilder::new()
+        .add_slate("RED")
+        .add_slate("BLU")
+        .with_quorum(1)
+        .build()
+    {
+        Ok(e) => {
+            println!("Election successfuly created!");
+            e
         }
+        Err(e) => {
+            eprintln!("Election failed to be created: {e}");
+            return;
+        }
+    };
+
+    let red = Slate::new("RED").expect("RED is valid");
+    let blu = Slate::new("BLU").expect("BLU is valid");
+
+    if let Err(e) = election.cast_vote(red.clone()) {
+        eprintln!("WARN: {e}");
+    }
+    if let Err(e) = election.cast_vote(blu.clone()) {
+        eprintln!("WARN: {e}");
     }
 
-    let closed_election = election.close();
+    let result = election.close().compute_result();
 
-    match closed_election.compute_result() {
-        Ok(winner) => println!("{winner} won!"),
-        Err(failed) => eprintln!("ERROR: {failed}"),
+    match result {
+        Ok(AcademicOutcome::Winner(slate)) => {
+            println!("{slate} won");
+        }
+        Ok(AcademicOutcome::Tie(slates)) => {
+            for slate in slates {
+                println!("{slate}");
+            }
+            println!("tied");
+        }
+        Ok(AcademicOutcome::QuorumNotMet) => {
+            println!("Election did not meet minimum quorum");
+        }
+        Err(e) => {
+            eprintln!("ERROR: {e}");
+        }
     }
 }
