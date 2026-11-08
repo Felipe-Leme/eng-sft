@@ -37,7 +37,7 @@ impl Slate {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AcademicOutcome {
     Winner(Slate),
     Tie(Vec<Slate>),
