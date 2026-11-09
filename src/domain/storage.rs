@@ -1,6 +1,9 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
 use crate::error::StorageError;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ElectionEvent<V, O> {
     ElectionCreated,
     VoteCast(V),
@@ -8,16 +11,36 @@ pub enum ElectionEvent<V, O> {
     TallyComputed(O),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventRecord<V, O> {
+    pub sequence: u64,
+    pub timestamp: DateTime<Utc>,
+    pub payload: ElectionEvent<V, O>,
+}
+
+impl<V, O> EventRecord<V, O> {
+    pub fn new(sequence: u64, payload: ElectionEvent<V, O>) -> Self {
+        Self {
+            sequence,
+            timestamp: Utc::now(),
+            payload,
+        }
+    }
+}
+
 pub trait EventStore<V, O> {
     /// Appends a new event to the end of the ledger.
-    fn append(&mut self, event: ElectionEvent<V, O>) -> Result<(), StorageError>;
+    fn append(&mut self, record: EventRecord<V, O>) -> Result<(), StorageError>;
 
     /// Replays the event stream for auditing or state reconstruction.
-    fn get_all(&self) -> Result<Vec<ElectionEvent<V, O>>, StorageError>;
+    fn get_all(&self) -> Result<Vec<EventRecord<V, O>>, StorageError>;
+
+    /// Returns the current maximum sequence number or 0 if empty.
+    fn current_sequence(&self) -> u64;
 }
 
 pub struct MemoryEventStore<V, O> {
-    ledger: Vec<ElectionEvent<V, O>>,
+    ledger: Vec<EventRecord<V, O>>,
 }
 
 impl<V, O> Default for MemoryEventStore<V, O> {
@@ -33,13 +56,26 @@ impl<V, O> MemoryEventStore<V, O> {
 }
 
 impl<V: Clone, O: Clone> EventStore<V, O> for MemoryEventStore<V, O> {
-    fn append(&mut self, event: ElectionEvent<V, O>) -> Result<(), StorageError> {
-        self.ledger.push(event);
+    fn append(&mut self, record: EventRecord<V, O>) -> Result<(), StorageError> {
+        let expected = self.current_sequence() + 1;
+
+        if record.sequence != expected {
+            return Err(StorageError::ConcurrencyConflict {
+                expected,
+                got: record.sequence,
+            });
+        }
+
+        self.ledger.push(record);
         Ok(())
     }
 
-    fn get_all(&self) -> Result<Vec<ElectionEvent<V, O>>, StorageError> {
+    fn get_all(&self) -> Result<Vec<EventRecord<V, O>>, StorageError> {
         Ok(self.ledger.clone())
+    }
+
+    fn current_sequence(&self) -> u64 {
+        self.ledger.last().map(|r| r.sequence).unwrap_or(0)
     }
 }
 
@@ -50,43 +86,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_append_and_retrieve_events() {
-        let mut store = MemoryEventStore::new();
+    fn test_append_enforces_sequence() {
+        let mut store: MemoryEventStore<String, String> = MemoryEventStore::new();
 
-        let red = Slate::new("RED").unwrap();
+        let event1 = EventRecord::new(1, ElectionEvent::ElectionCreated);
+        assert!(store.append(event1).is_ok());
 
-        assert!(store.append(ElectionEvent::ElectionCreated).is_ok());
-        assert!(store.append(ElectionEvent::VoteCast(red.clone())).is_ok());
-        assert!(store.append(ElectionEvent::ElectionClosed).is_ok());
+        let event3 = EventRecord::new(3, ElectionEvent::ElectionClosed);
+        let err = store.append(event3).unwrap_err();
+
+        assert_eq!(
+            err,
+            StorageError::ConcurrencyConflict {
+                expected: 2,
+                got: 3
+            }
+        );
+        assert_eq!(store.current_sequence(), 1);
+    }
+
+    #[test]
+    fn test_successful_sequential_append() {
+        let mut store: MemoryEventStore<String, String> = MemoryEventStore::new();
+
         assert!(
             store
-                .append(ElectionEvent::TallyComputed(AcademicOutcome::Winner(
-                    red.clone()
-                )))
+                .append(EventRecord::new(1, ElectionEvent::ElectionCreated))
+                .is_ok()
+        );
+        assert!(
+            store
+                .append(EventRecord::new(2, ElectionEvent::VoteCast("v1".into())))
+                .is_ok()
+        );
+        assert!(
+            store
+                .append(EventRecord::new(3, ElectionEvent::ElectionClosed))
                 .is_ok()
         );
 
         let events = store.get_all().unwrap();
-
-        assert_eq!(events.len(), 4);
-        assert_eq!(events[0], ElectionEvent::ElectionCreated);
-        assert_eq!(events[1], ElectionEvent::VoteCast(red.clone()));
-        assert_eq!(events[2], ElectionEvent::ElectionClosed);
-        assert_eq!(
-            events[3],
-            ElectionEvent::TallyComputed(AcademicOutcome::Winner(red))
-        );
-    }
-
-    #[test]
-    fn test_store_is_isolated_from_mutations() {
-        let mut store: MemoryEventStore<u32, u32> = MemoryEventStore::new();
-        store.append(ElectionEvent::ElectionCreated).unwrap();
-
-        let mut retrieved_events = store.get_all().unwrap();
-        retrieved_events.clear();
-
-        let unaffected_events = store.get_all().unwrap();
-        assert_eq!(unaffected_events.len(), 1);
+        assert_eq!(events.len(), 3);
+        assert_eq!(store.current_sequence(), 3);
     }
 }

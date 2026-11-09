@@ -14,6 +14,9 @@ pub enum StorageError {
     #[error("Failed to append event: {0}")]
     AppendFailed(String),
 
+    #[error("Concurrency conflict: expected sequence {expected}, got {got}")]
+    ConcurrencyConflict { expected: u64, got: u64 },
+
     #[error("Failed to read events: {0}")]
     ReadFailed(String),
 }
