@@ -1,7 +1,13 @@
 use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
 
-use crate::{domain::strategy::TallyStrategy, error::ElectionError};
+use crate::{
+    domain::{
+        election::{Election, Open},
+        strategy::TallyStrategy,
+    },
+    error::{CondoElectionError, ElectionError},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CondoVote {
@@ -25,7 +31,7 @@ impl TallyStrategy for CondoStrategy {
     type Vote = CondoVote;
     type Outcome = CondoOutcome;
 
-    fn validate(&self, vote: &Self::Vote) -> Result<(), crate::error::ElectionError> {
+    fn validate(&self, vote: &Self::Vote) -> Result<(), ElectionError> {
         if !self.valid_options.contains(&vote.choice) {
             return Err(ElectionError::InvalidVote(format!(
                 "Option not recognized: {}",
@@ -77,14 +83,14 @@ impl TallyStrategy for CondoStrategy {
 }
 
 pub struct CondoElectionBuilder {
-    valid_options: HashSet<String>,
+    options_input: Vec<String>,
     minimum_fraction_quorum: Decimal,
 }
 
 impl Default for CondoElectionBuilder {
     fn default() -> Self {
         Self {
-            valid_options: HashSet::new(),
+            options_input: Vec::new(),
             minimum_fraction_quorum: Decimal::ZERO,
         }
     }
@@ -96,7 +102,7 @@ impl CondoElectionBuilder {
     }
 
     pub fn add_option(mut self, choice: &str) -> Self {
-        self.valid_options.insert(choice.to_string());
+        self.options_input.push(choice.to_string());
         self
     }
 
@@ -105,20 +111,73 @@ impl CondoElectionBuilder {
         self
     }
 
-    pub fn build(self) -> Result<CondoStrategy, String> {
-        if self.valid_options.is_empty() {
-            return Err("Must have at least one valid option".into());
-        }
-
+    pub fn build(self) -> Result<Election<CondoStrategy, Open>, CondoElectionError> {
         if self.minimum_fraction_quorum < Decimal::ZERO
             || self.minimum_fraction_quorum > Decimal::ONE
         {
-            return Err("Quorum must be between 0.0 and 1.0".into());
+            return Err(CondoElectionError::OutOfRangeQuorum);
         }
 
-        Ok(CondoStrategy {
-            valid_options: self.valid_options,
+        if self.options_input.is_empty() {
+            return Err(CondoElectionError::NoOptionsRegistered);
+        }
+
+        let mut valid_options = HashSet::new();
+
+        for opt in self.options_input {
+            let trimmed = opt.trim();
+            if trimmed.is_empty() {
+                return Err(CondoElectionError::InvalidOptionName(opt));
+            }
+            valid_options.insert(trimmed.to_string());
+        }
+
+        let strategy = CondoStrategy {
+            valid_options,
             minimum_fraction_quorum: self.minimum_fraction_quorum,
-        })
+        };
+
+        Ok(Election::new(strategy))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rust_decimal::dec;
+
+    use super::*;
+
+    #[test]
+    fn test_condo_success_lifecycle() {
+        let mut election = CondoElectionBuilder::new()
+            .add_option("this")
+            .add_option("that")
+            .add_option("neither")
+            .with_quorum(dec!(0.51))
+            .build()
+            .expect("Failed to build election");
+
+        election
+            .cast_vote(CondoVote {
+                choice: "this".into(),
+                fraction: dec!(0.1),
+            })
+            .unwrap();
+        election
+            .cast_vote(CondoVote {
+                choice: "that".into(),
+                fraction: dec!(0.2),
+            })
+            .unwrap();
+        election
+            .cast_vote(CondoVote {
+                choice: "neither".into(),
+                fraction: dec!(0.4),
+            })
+            .unwrap();
+
+        let result = election.close().compute_result().unwrap();
+
+        assert_eq!(result, CondoOutcome::Winner("neither".into()));
     }
 }

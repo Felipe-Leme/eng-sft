@@ -1,7 +1,13 @@
 use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
 
-use crate::{domain::strategy::TallyStrategy, error::ElectionError};
+use crate::{
+    domain::{
+        election::{Election, Open},
+        strategy::TallyStrategy,
+    },
+    error::{BudgetElectionError, ElectionError},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Project {
@@ -24,7 +30,7 @@ impl TallyStrategy for BudgetStrategy {
     type Vote = Vec<String>;
     type Outcome = BudgetOutcome;
 
-    fn validate(&self, vote: &Self::Vote) -> Result<(), crate::error::ElectionError> {
+    fn validate(&self, vote: &Self::Vote) -> Result<(), ElectionError> {
         let mut seen = HashSet::new();
         for proj_name in vote {
             if !self.available_projects.contains_key(proj_name) {
@@ -52,10 +58,7 @@ impl TallyStrategy for BudgetStrategy {
             let n = ranked_vote.len();
 
             for (idx, proj_name) in ranked_vote.iter().enumerate() {
-                let project = self
-                    .available_projects
-                    .get(proj_name)
-                    .expect("project should exist");
+                let project = self.available_projects.get(proj_name).unwrap();
                 let points = n - 1 - idx;
                 *scores.entry(project).or_insert(0) += points;
             }
@@ -83,14 +86,14 @@ impl TallyStrategy for BudgetStrategy {
 }
 
 pub struct BudgetElectionBuilder {
-    available_projects: HashMap<String, Project>,
+    projects_input: Vec<(String, Decimal)>,
     budget_ceiling: Decimal,
 }
 
 impl Default for BudgetElectionBuilder {
     fn default() -> Self {
         Self {
-            available_projects: HashMap::new(),
+            projects_input: Vec::new(),
             budget_ceiling: Decimal::ZERO,
         }
     }
@@ -102,13 +105,7 @@ impl BudgetElectionBuilder {
     }
 
     pub fn add_project(mut self, name: &str, cost: Decimal) -> Self {
-        self.available_projects.insert(
-            name.to_string(),
-            Project {
-                name: name.to_string(),
-                cost,
-            },
-        );
+        self.projects_input.push((name.to_string(), cost));
         self
     }
 
@@ -117,18 +114,79 @@ impl BudgetElectionBuilder {
         self
     }
 
-    pub fn build(self) -> Result<BudgetStrategy, String> {
+    pub fn build(self) -> Result<Election<BudgetStrategy, Open>, BudgetElectionError> {
         if self.budget_ceiling < Decimal::ZERO {
-            return Err("Budget ceiling cannot be negative".into());
+            return Err(BudgetElectionError::NegativeCeiling);
         }
 
-        if self.available_projects.is_empty() {
-            return Err("Cannot build a budget election without projects".into());
+        if self.projects_input.is_empty() {
+            return Err(BudgetElectionError::NoProjectsRegistered);
         }
 
-        Ok(BudgetStrategy {
-            available_projects: self.available_projects,
+        let mut available_projects = HashMap::new();
+
+        for (name, cost) in self.projects_input {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                return Err(BudgetElectionError::InvalidProjectName(name));
+            }
+
+            available_projects.insert(
+                trimmed.to_string(),
+                Project {
+                    name: trimmed.to_string(),
+                    cost,
+                },
+            );
+        }
+
+        let strategy = BudgetStrategy {
+            available_projects,
             budget_ceiling: self.budget_ceiling,
-        })
+        };
+
+        Ok(Election::new(strategy))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rust_decimal::dec;
+
+    use super::*;
+
+    #[test]
+    fn test_budget_success_lifecycle() {
+        let mut election = BudgetElectionBuilder::new()
+            .add_project("Park".into(), dec!(50_000.0))
+            .add_project("Library".into(), dec!(30_000.0))
+            .add_project("Roads".into(), dec!(40_000.0))
+            .with_ceiling(dec!(80_000.0))
+            .build()
+            .expect("Failed to build election");
+
+        election
+            .cast_vote(vec!["Roads".into(), "Park".into(), "Library".into()])
+            .unwrap();
+        election
+            .cast_vote(vec!["Roads".into(), "Library".into(), "Park".into()])
+            .unwrap();
+
+        let result = election.close().compute_result().unwrap();
+
+        assert_eq!(
+            result.selected_projects,
+            vec![
+                Project {
+                    name: "Roads".into(),
+                    cost: dec!(40_000.0)
+                },
+                Project {
+                    name: "Library".into(),
+                    cost: dec!(30_000.0)
+                }
+            ]
+        );
+        assert_eq!(result.total_spent, dec!(70_000.0));
     }
 }

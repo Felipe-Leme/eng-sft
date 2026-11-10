@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 chrono = { version = "0.4.45", features = ["serde"] }
-rust_decimal = "1.43.0"
+rust_decimal = { version = "1.43.0", features = ["macros"] }
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"
 

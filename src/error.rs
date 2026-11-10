@@ -27,3 +27,27 @@ pub enum AcademicElectionError {
     #[error("Invalid slate name: {0}")]
     InvalidSlateName(String),
 }
+
+#[derive(Error, Debug, PartialEq, Eq)]
+pub enum BudgetElectionError {
+    #[error("Cannot start an election with zero projects")]
+    NoProjectsRegistered,
+
+    #[error("Budget ceiling cannot be negative")]
+    NegativeCeiling,
+
+    #[error("Invalid project name: {0}")]
+    InvalidProjectName(String),
+}
+
+#[derive(Error, Debug, PartialEq, Eq)]
+pub enum CondoElectionError {
+    #[error("Cannot start an election with zero options")]
+    NoOptionsRegistered,
+
+    #[error("Quorum must be between 0.0 and 1.0")]
+    OutOfRangeQuorum,
+
+    #[error("Invalid option name: {0}")]
+    InvalidOptionName(String),
+}
