@@ -158,9 +158,9 @@ mod tests {
     #[test]
     fn test_budget_success_lifecycle() {
         let mut election = BudgetElectionBuilder::new()
-            .add_project("Park".into(), dec!(50_000.0))
-            .add_project("Library".into(), dec!(30_000.0))
-            .add_project("Roads".into(), dec!(40_000.0))
+            .add_project("Park", dec!(50_000.0))
+            .add_project("Library", dec!(30_000.0))
+            .add_project("Roads", dec!(40_000.0))
             .with_ceiling(dec!(80_000.0))
             .build()
             .expect("Failed to build election");
