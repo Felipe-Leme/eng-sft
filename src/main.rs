@@ -1,25 +1,68 @@
-use rust_decimal::{Decimal, dec};
 use std::fmt::Display;
+
+use rust_decimal::{Decimal, dec};
 
 use crate::domain::{
     academic::{AcademicElectionBuilder, AcademicOutcome, Slate},
-    budget::BudgetElectionBuilder,
-    condo::{CondoElectionBuilder, CondoVote},
+    budget::{BudgetElectionBuilder, BudgetOutcome},
+    condo::{CondoElectionBuilder, CondoOutcome, CondoVote},
     storage::{ElectionEvent, EventRecord, EventStore, MemoryEventStore},
 };
 
 mod domain;
 mod error;
 
+fn print_section(title: &str) {
+    println!("\n=== {title} ===");
+}
+
 fn show_expected_error<E: Display>(label: &str, result: Result<(), E>) {
     match result {
-        Err(error) => println!("Expected {label}: {error}"),
+        Err(error) => println!("  [expected error] {label}: {error}"),
         Ok(()) => panic!("Expected {label}, but the operation succeeded"),
     }
 }
 
+fn print_academic_outcome(outcome: &AcademicOutcome) {
+    match outcome {
+        AcademicOutcome::Winner(slate) => println!("Result: {slate} wins"),
+        AcademicOutcome::Tie(slates) => {
+            let names = slates
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("Result: tie between {names}");
+        }
+        AcademicOutcome::QuorumNotMet => println!("Result: quorum not met"),
+    }
+}
+
+fn print_budget_outcome(outcome: &BudgetOutcome) {
+    println!("Selected projects:");
+    if outcome.selected_projects.is_empty() {
+        println!("  (none)");
+    } else {
+        for project in &outcome.selected_projects {
+            println!("  - {} ({})", project.name, project.cost);
+        }
+    }
+    println!("Total spent: {}", outcome.total_spent);
+}
+
+fn print_condo_outcome(outcome: &CondoOutcome) {
+    match outcome {
+        CondoOutcome::Winner(option) => println!("Result: {option} wins"),
+        CondoOutcome::Tie(options) => {
+            println!("Result: tie between {}", options.join(", "));
+        }
+        CondoOutcome::QuorumNotMet => println!("Result: quorum not met"),
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Academic election");
+    print_section("Academic election");
+    println!("Validation examples:");
     show_expected_error(
         "no-slate error",
         AcademicElectionBuilder::new().build().map(|_| ()),
@@ -47,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     academic.cast_vote(red.clone())?;
     academic.cast_vote(blu.clone())?;
     let academic_outcome = academic.close().compute_result()?;
-    println!("Academic outcome: {academic_outcome:?}");
+    print_academic_outcome(&academic_outcome);
 
     let empty_academic = AcademicElectionBuilder::new().add_slate("RED").build()?;
     show_expected_error(
@@ -68,12 +111,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "storage sequence-conflict error",
         store.append(EventRecord::new(7, ElectionEvent::ElectionClosed)),
     );
+    println!("Audit log:");
     for event in store.get_all()? {
-        println!("[Seq {}] {:?}", event.sequence, event.payload);
+        println!("  #{:<2} {:?}", event.sequence, event.payload);
     }
-    println!("Events since sequence 3: {}", store.get_since(3)?.len());
+    println!("Events from sequence 3: {}", store.get_since(3)?.len());
 
-    println!("\nBudget election");
+    print_section("Budget election");
+    println!("Validation examples:");
     show_expected_error(
         "no-projects error",
         BudgetElectionBuilder::new()
@@ -109,9 +154,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     budget.cast_vote(vec!["Park".to_owned(), "Library".to_owned()])?;
     budget.cast_vote(vec!["Library".to_owned(), "Park".to_owned()])?;
-    println!("Budget outcome: {:?}", budget.close().compute_result()?);
+    let budget_outcome = budget.close().compute_result()?;
+    print_budget_outcome(&budget_outcome);
 
-    println!("\nCondominium election");
+    print_section("Condominium election");
+    println!("Validation examples:");
     show_expected_error(
         "no-options error",
         CondoElectionBuilder::new().build().map(|_| ()),
@@ -159,7 +206,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         choice: "Renovate".to_owned(),
         fraction: dec!(0.4),
     })?;
-    println!("Condominium outcome: {:?}", condo.close().compute_result()?);
+    let condo_outcome = condo.close().compute_result()?;
+    print_condo_outcome(&condo_outcome);
 
     Ok(())
 }
