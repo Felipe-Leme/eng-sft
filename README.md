@@ -66,11 +66,11 @@ O projeto adota uma abordagem de **Kanban Contínuo** adaptada para equipe solo,
 
 ## 4. Artefatos Principais do Processo
 
-| Artefato | Finalidade | 
- | ----- | ----- | 
-| **Backlog de Domínio** | Registrar necessidades, mudanças de regra, riscos e aprendizados. | 
-| **Modelo de Domínio e Traits** | Representar conceitos comuns e regras específicas dos três contextos. | 
-| **Suíte de Testes (TDD)** | Definir e verificar comportamentos esperados de apuração e elegibilidade. | 
-| **Núcleo E2E + API** | Implementar submissão, persistência lógica e evidências. | 
-| **Checklist de Sigilo/Arquitetura** | Garantir a separação entre identidade e conteúdo, e extensibilidade. | 
-| **Relatórios de CI** | Registrar resultados de build, testes e análise estática. | 
+| Artefato | Finalidade |
+| ----- | ----- |
+| **Backlog de Domínio** | Registrar necessidades, mudanças de regra, riscos e aprendizados. |
+| **Modelo de Domínio e Traits** | Representar conceitos comuns e regras específicas dos três contextos. |
+| **Suíte de Testes (TDD)** | Definir e verificar comportamentos esperados de apuração e elegibilidade. |
+| **Núcleo E2E + API** | Implementar submissão, persistência lógica e evidências. |
+| **Checklist de Sigilo/Arquitetura** | Garantir a separação entre identidade e conteúdo, e extensibilidade. |
+| **Relatórios de CI** | Registrar resultados de build, testes e análise estática. |
