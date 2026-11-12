@@ -4,6 +4,8 @@ use eng_sft::{
         budget::{BudgetElectionBuilder, BudgetOutcome, Project},
         condo::{CondoElectionBuilder, CondoOutcome, CondoVote},
         crypto::{GENESIS_HASH, HashedEventRecord, verify_chain},
+        custom::{CustomElection, CustomOutcome, CustomRuleSet, CustomRuleStrategy, CustomVote},
+        election::{Election, Open},
         identity::{AnonymousBallotBox, EligibilityRegistry, TokenAllowList, VoterId},
         merkle::MerkleTree,
         storage::{ElectionEvent, EventRecord, EventStore, MemoryEventStore},
@@ -11,6 +13,7 @@ use eng_sft::{
     error::{ElectionError, IdentityError, VotingFacadeError},
 };
 use rust_decimal::dec;
+use serde::Deserialize;
 
 #[test]
 fn academic_election_rejects_unknown_slate_and_tallies_votes() {
@@ -186,4 +189,59 @@ fn memory_event_store_enforces_sequential_appends() {
         }
     );
     assert_eq!(store.current_sequence(), 1);
+}
+
+#[test]
+fn custom_election_loads_json_config_validates_ballots_and_tallies() {
+    #[derive(Deserialize)]
+    struct Config {
+        rules: CustomRuleSet,
+        votes: Vec<CustomVote>,
+    }
+
+    let config: Config = serde_json::from_str(include_str!("../src/config.json")).unwrap();
+    let strategy = CustomRuleStrategy::new(config.rules).unwrap();
+    let mut election: CustomElection<Open> = Election::new(strategy);
+
+    assert!(matches!(
+        election.cast_vote(CustomVote {
+            choices: vec!["Unknown".into()],
+            weight: dec!(1),
+        }),
+        Err(ElectionError::InvalidVote(_))
+    ));
+
+    for vote in config.votes {
+        election.cast_vote(vote).unwrap();
+    }
+
+    assert_eq!(
+        election.close().compute_result().unwrap(),
+        CustomOutcome::Winners(vec!["Option A".into()])
+    );
+}
+
+#[test]
+fn custom_election_reports_unmet_ballot_quorum() {
+    let strategy = CustomRuleStrategy::new(CustomRuleSet {
+        options: vec!["A".into(), "B".into()],
+        scoring: eng_sft::domain::custom::ScoringRule::Plurality,
+        weighting: eng_sft::domain::custom::WeightingRule::Uniform,
+        quorum: eng_sft::domain::custom::QuorumRule::MinBallots { min: 2 },
+        tie_breaker: eng_sft::domain::custom::TieBreakerRule::Alphabetical,
+        winner_count: 1,
+    })
+    .unwrap();
+    let mut election: CustomElection<Open> = Election::new(strategy);
+    election
+        .cast_vote(CustomVote {
+            choices: vec!["B".into()],
+            weight: dec!(1),
+        })
+        .unwrap();
+
+    assert_eq!(
+        election.close().compute_result().unwrap(),
+        CustomOutcome::QuorumNotMet
+    );
 }

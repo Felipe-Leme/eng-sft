@@ -4,7 +4,7 @@ use rust_decimal::{Decimal, dec, prelude::FromPrimitive};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    domain::strategy::TallyStrategy,
+    domain::{election::Election, strategy::TallyStrategy},
     error::{CustomElectionError, ElectionError},
 };
 
@@ -92,6 +92,8 @@ pub struct CustomRuleStrategy {
     rules: CustomRuleSet,
     valid_options: HashSet<String>,
 }
+
+pub type CustomElection<State> = Election<CustomRuleStrategy, State>;
 
 impl CustomRuleStrategy {
     pub fn new(rules: CustomRuleSet) -> Result<Self, CustomElectionError> {
