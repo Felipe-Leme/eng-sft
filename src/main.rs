@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use rust_decimal::{Decimal, dec};
 
-use crate::domain::{
+use eng_sft::domain::{
     academic::{AcademicElectionBuilder, AcademicOutcome, Slate},
     budget::{BudgetElectionBuilder, BudgetOutcome},
     condo::{CondoElectionBuilder, CondoOutcome, CondoVote},
@@ -11,9 +11,6 @@ use crate::domain::{
     merkle::MerkleTree,
     storage::{ElectionEvent, EventRecord, EventStore, MemoryEventStore},
 };
-
-mod domain;
-mod error;
 
 fn print_section(title: &str) {
     println!("\n=== {title} ===");
@@ -80,11 +77,11 @@ fn run_anonymous_voting_example() -> Result<(), Box<dyn std::error::Error>> {
         ballot_box.cast_anonymous_vote(&token, Slate::new("BLU")?),
     );
 
-    let (_, outcome, store) = ballot_box.close_and_tally()?;
-    print_academic_outcome(&outcome);
+    let tally = ballot_box.close_and_tally()?;
+    print_academic_outcome(&tally.outcome);
     println!(
         "Anonymous election audit events: {}",
-        store.get_all()?.len()
+        tally.store.get_all()?.len()
     );
 
     Ok(())

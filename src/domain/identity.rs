@@ -76,13 +76,17 @@ impl TokenAllowList {
     }
 }
 
+pub struct TalliedElection<S: TallyStrategy, E> {
+    pub election: Election<S, Closed>,
+    pub outcome: S::Outcome,
+    pub store: E,
+}
+
 pub struct AnonymousBallotBox<S: TallyStrategy, E> {
     election: Election<S, Open>,
     store: E,
     allowlist: TokenAllowList,
 }
-
-pub type TalliedElection<S, E> = (Election<S, Closed>, <S as TallyStrategy>::Outcome, E);
 
 impl<S, E> AnonymousBallotBox<S, E>
 where
@@ -144,7 +148,11 @@ where
             ElectionEvent::TallyComputed(outcome.clone()),
         ))?;
 
-        Ok((closed_election, outcome, self.store))
+        Ok(TalliedElection {
+            election: closed_election,
+            outcome,
+            store: self.store,
+        })
     }
 }
 
@@ -246,9 +254,9 @@ mod tests {
             ))
         );
 
-        let (_, outcome, final_store) = ballot_box.close_and_tally().unwrap();
-        assert_eq!(outcome, AcademicOutcome::Winner(xyz));
-        assert_eq!(final_store.get_all().unwrap().len(), 5); // Created + 2 Votes + Closed + Tallied.
+        let tally = ballot_box.close_and_tally().unwrap();
+        assert_eq!(tally.outcome, AcademicOutcome::Winner(xyz));
+        assert_eq!(tally.store.get_all().unwrap().len(), 5); // Created + 2 Votes + Closed + Tallied.
     }
 
     #[test]
@@ -276,10 +284,10 @@ mod tests {
         ballot_box
             .cast_anonymous_vote(&token, valid_slate.clone())
             .unwrap();
-        let (_, outcome, store) = ballot_box.close_and_tally().unwrap();
+        let tally = ballot_box.close_and_tally().unwrap();
 
-        assert_eq!(outcome, AcademicOutcome::Winner(valid_slate));
-        assert_eq!(store.get_all().unwrap().len(), 4);
+        assert_eq!(tally.outcome, AcademicOutcome::Winner(valid_slate));
+        assert_eq!(tally.store.get_all().unwrap().len(), 4);
     }
 
     #[test]
@@ -309,9 +317,9 @@ mod tests {
             .cast_anonymous_vote(&token, vote.clone())
             .unwrap();
 
-        let (_, outcome, store) = ballot_box.close_and_tally().unwrap();
-        assert_eq!(outcome, AcademicOutcome::Winner(vote));
-        assert_eq!(store.get_all().unwrap().len(), 4);
+        let tally = ballot_box.close_and_tally().unwrap();
+        assert_eq!(tally.outcome, AcademicOutcome::Winner(vote));
+        assert_eq!(tally.store.get_all().unwrap().len(), 4);
     }
 
     #[test]
