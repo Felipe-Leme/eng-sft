@@ -156,7 +156,7 @@ fn decode_hash(value: &str) -> Option<Hash> {
     }
 
     let mut hash = [0; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let high = decode_hex_digit(pair[0])?;
         let low = decode_hex_digit(pair[1])?;
         hash[index] = (high << 4) | low;
