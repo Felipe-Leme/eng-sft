@@ -6,6 +6,8 @@ use crate::domain::{
     academic::{AcademicElectionBuilder, AcademicOutcome, Slate},
     budget::{BudgetElectionBuilder, BudgetOutcome},
     condo::{CondoElectionBuilder, CondoOutcome, CondoVote},
+    crypto::{GENESIS_HASH, HashedEventRecord, verify_chain},
+    merkle::MerkleTree,
     storage::{ElectionEvent, EventRecord, EventStore, MemoryEventStore},
 };
 
@@ -116,6 +118,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  #{:<2} {:?}", event.sequence, event.payload);
     }
     println!("Events from sequence 3: {}", store.get_since(3)?.len());
+
+    print_section("Cryptographic audit");
+    let audit_payloads = [
+        ElectionEvent::<String, String>::ElectionCreated,
+        ElectionEvent::VoteCast("RED".to_owned()),
+        ElectionEvent::ElectionClosed,
+        ElectionEvent::TallyComputed("RED".to_owned()),
+    ];
+    let mut hashed_events = Vec::with_capacity(audit_payloads.len());
+    let mut previous_hash = GENESIS_HASH.to_owned();
+    for (index, payload) in audit_payloads.into_iter().enumerate() {
+        let record = HashedEventRecord::new(
+            index as u64 + 1,
+            format!("2026-01-01T00:00:{:02}Z", index + 1),
+            previous_hash,
+            payload,
+        )?;
+        previous_hash = record.current_hash.clone();
+        hashed_events.push(record);
+    }
+
+    let chain_valid = verify_chain(&hashed_events)?;
+    println!("Hash chain valid: {chain_valid}");
+    if !chain_valid {
+        return Err("Election audit hash chain failed verification".into());
+    }
+
+    let event_hashes: Vec<&[u8]> = hashed_events
+        .iter()
+        .map(|record| record.current_hash.as_bytes())
+        .collect();
+    let merkle_tree = MerkleTree::new(&event_hashes);
+    let merkle_root = merkle_tree.root();
+    let vote_proof = merkle_tree
+        .generate_proof(1)
+        .ok_or("Vote event missing from Merkle tree")?;
+    let proof_valid = vote_proof.verify(&merkle_root);
+    println!("Merkle root: {merkle_root}");
+    println!("Vote event proof valid: {proof_valid}");
+    if !proof_valid {
+        return Err("Election vote Merkle proof failed verification".into());
+    }
 
     print_section("Budget election");
     println!("Validation examples:");
