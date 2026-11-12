@@ -2,17 +2,15 @@ use std::fmt::Display;
 
 use rust_decimal::{Decimal, dec};
 
-use crate::domain::{
+use eng_sft::domain::{
     academic::{AcademicElectionBuilder, AcademicOutcome, Slate},
     budget::{BudgetElectionBuilder, BudgetOutcome},
     condo::{CondoElectionBuilder, CondoOutcome, CondoVote},
     crypto::{GENESIS_HASH, HashedEventRecord, verify_chain},
+    identity::{AnonymousBallotBox, EligibilityRegistry, TokenAllowList, VoterId},
     merkle::MerkleTree,
     storage::{ElectionEvent, EventRecord, EventStore, MemoryEventStore},
 };
-
-mod domain;
-mod error;
 
 fn print_section(title: &str) {
     println!("\n=== {title} ===");
@@ -60,6 +58,33 @@ fn print_condo_outcome(outcome: &CondoOutcome) {
         }
         CondoOutcome::QuorumNotMet => println!("Result: quorum not met"),
     }
+}
+
+fn run_anonymous_voting_example() -> Result<(), Box<dyn std::error::Error>> {
+    let voter = VoterId("ra000001".into());
+    let mut registry = EligibilityRegistry::new(vec![voter.clone()]);
+    let mut allowlist = TokenAllowList::new();
+    let token = registry.issue_token(&voter, &mut allowlist)?;
+    let election = AcademicElectionBuilder::new()
+        .add_slate("RED")
+        .add_slate("BLU")
+        .build()?;
+    let mut ballot_box = AnonymousBallotBox::new(election, MemoryEventStore::new(), allowlist)?;
+
+    ballot_box.cast_anonymous_vote(&token, Slate::new("RED")?)?;
+    show_expected_error(
+        "spent anonymous token",
+        ballot_box.cast_anonymous_vote(&token, Slate::new("BLU")?),
+    );
+
+    let tally = ballot_box.close_and_tally()?;
+    print_academic_outcome(&tally.outcome);
+    println!(
+        "Anonymous election audit events: {}",
+        tally.store.get_all()?.len()
+    );
+
+    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -118,6 +143,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  #{:<2} {:?}", event.sequence, event.payload);
     }
     println!("Events from sequence 3: {}", store.get_since(3)?.len());
+
+    print_section("Anonymous voting");
+    run_anonymous_voting_example()?;
 
     print_section("Cryptographic audit");
     let audit_payloads = [

@@ -3,6 +3,7 @@ pub mod budget;
 pub mod condo;
 pub mod crypto;
 pub mod election;
+pub mod identity;
 pub mod merkle;
 pub mod storage;
 pub mod strategy;

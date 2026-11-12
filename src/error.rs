@@ -51,3 +51,27 @@ pub enum CondoElectionError {
     #[error("Invalid option name: {0}")]
     InvalidOptionName(String),
 }
+
+#[derive(Error, Debug, PartialEq, Eq)]
+pub enum IdentityError {
+    #[error("Voter is not on the eligible roll")]
+    IneligibleVoter,
+
+    #[error("Eligibility token has already been issued to this voter")]
+    TokenAlreadyIssued,
+
+    #[error("Invalid or already spent ballot token")]
+    InvalidOrSpentToken,
+}
+
+#[derive(Error, Debug, PartialEq, Eq)]
+pub enum VotingFacadeError {
+    #[error(transparent)]
+    Identity(#[from] IdentityError),
+
+    #[error(transparent)]
+    Election(#[from] ElectionError),
+
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+}
