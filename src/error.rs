@@ -53,6 +53,27 @@ pub enum CondoElectionError {
 }
 
 #[derive(Error, Debug, PartialEq, Eq)]
+pub enum CustomElectionError {
+    #[error("Custom election must have at least one option")]
+    InvalidOptions,
+
+    #[error("Custom election must have winner_count between 1 and total options")]
+    OutOfRangeWinnerCount,
+
+    #[error("Approval must have max_choices between 1 and total options")]
+    OutOfRangeMaxChoices,
+
+    #[error("Option names cannot be empty")]
+    InvalidOptionName(String),
+
+    #[error("Duplicate option names are not allowed")]
+    DuplicateOptions,
+
+    #[error("Minimum total weight cannot be negative")]
+    NegativeMinimumWeight,
+}
+
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum IdentityError {
     #[error("Voter is not on the eligible roll")]
     IneligibleVoter,
