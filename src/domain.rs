@@ -8,5 +8,6 @@ pub mod factory;
 pub mod identity;
 pub mod manifest;
 pub mod merkle;
+pub mod scoreboard;
 pub mod storage;
 pub mod strategy;

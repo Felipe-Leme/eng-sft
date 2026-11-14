@@ -1,5 +1,6 @@
 use std::{fs, path::Path};
 
+use rust_decimal::Decimal;
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
@@ -17,6 +18,7 @@ use crate::{
         AcademicElectionError, BudgetElectionError, CondoElectionError, CustomElectionError,
         ElectionError,
     },
+    types::Percentage,
 };
 
 #[derive(Debug, Error)]
@@ -128,7 +130,14 @@ impl ElectionFactory {
                     .fold(CondoElectionBuilder::new(), |builder, option| {
                         builder.add_option(option)
                     })
-                    .with_quorum(minimum_fraction_quorum);
+                    .with_quorum(
+                        Percentage::try_from(
+                            minimum_fraction_quorum
+                                .checked_mul(Decimal::ONE_HUNDRED)
+                                .ok_or(CondoElectionError::OutOfRangeQuorum)?,
+                        )
+                        .map_err(|_| CondoElectionError::OutOfRangeQuorum)?,
+                    );
                 let mut election = builder.build()?;
                 for vote in votes {
                     election.cast_vote(CondoVote {

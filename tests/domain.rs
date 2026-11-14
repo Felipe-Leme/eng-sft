@@ -15,6 +15,7 @@ use eng_sft::{
         storage::{ElectionEvent, EventRecord, EventStore, MemoryEventStore},
     },
     error::{ElectionError, IdentityError, VotingFacadeError},
+    types::Percentage,
 };
 use rust_decimal::dec;
 
@@ -118,19 +119,19 @@ fn condominium_election_uses_fractional_quorum_and_weighting() {
     let mut election = CondoElectionBuilder::new()
         .add_option("Repair")
         .add_option("Renovate")
-        .with_quorum(dec!(0.8))
+        .with_quorum(Percentage::try_from(dec!(80)).unwrap())
         .build()
         .unwrap();
     election
         .cast_vote(CondoVote {
             choice: "Repair".into(),
-            fraction: dec!(0.6),
+            fraction: Percentage::try_from(dec!(60)).unwrap(),
         })
         .unwrap();
     election
         .cast_vote(CondoVote {
             choice: "Renovate".into(),
-            fraction: dec!(0.4),
+            fraction: Percentage::try_from(dec!(40)).unwrap(),
         })
         .unwrap();
 

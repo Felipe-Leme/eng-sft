@@ -96,3 +96,11 @@ pub enum VotingFacadeError {
     #[error(transparent)]
     Storage(#[from] StorageError),
 }
+
+#[derive(Error, Debug, PartialEq, Eq)]
+#[error("score must be greater equal to 0")]
+pub struct ScoreError;
+
+#[derive(Error, Debug, PartialEq, Eq)]
+#[error("percentage must be between 0.0 and 100.0 (inclusive)")]
+pub struct PercentageError;
