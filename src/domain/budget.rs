@@ -1,21 +1,24 @@
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use crate::{
     domain::{
         election::{Election, Open},
+        scoreboard::Scoreboard,
         strategy::TallyStrategy,
     },
     error::{BudgetElectionError, ElectionError},
+    types::Score,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
     pub cost: Decimal,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BudgetOutcome {
     pub selected_projects: Vec<Project>,
     pub total_spent: Decimal,
@@ -52,26 +55,27 @@ impl TallyStrategy for BudgetStrategy {
     }
 
     fn tally(&self, votes: &[Self::Vote]) -> Result<Self::Outcome, ElectionError> {
-        let mut scores: HashMap<&Project, usize> = HashMap::new();
+        let mut scoreboard = Scoreboard::new();
 
         for ranked_vote in votes {
             let n = ranked_vote.len();
 
             for (idx, proj_name) in ranked_vote.iter().enumerate() {
-                let project = self.available_projects.get(proj_name).unwrap();
-                let points = n - 1 - idx;
-                *scores.entry(project).or_insert(0) += points;
+                let points = Score::new(Decimal::from(n - 1 - idx))
+                    .map_err(|e| ElectionError::InvalidVote(e.to_string()))?;
+                scoreboard.add_score(proj_name.clone(), points);
             }
         }
 
-        let mut scored_projects: Vec<_> = scores.into_iter().collect();
-
-        scored_projects.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name.cmp(&b.0.name)));
+        let scored_projects = scoreboard.into_sorted_descending();
 
         let mut selected_projects = Vec::new();
         let mut total_spent = Decimal::ZERO;
 
-        for (project, _) in scored_projects {
+        for (name, _) in scored_projects {
+            let project = self.available_projects.get(&name).ok_or_else(|| {
+                ElectionError::TallyFailed(format!("Scored project is not registered: {name}"))
+            })?;
             if total_spent + project.cost <= self.budget_ceiling {
                 selected_projects.push(project.clone());
                 total_spent += project.cost;

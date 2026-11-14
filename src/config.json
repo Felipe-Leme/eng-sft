@@ -1,0 +1,31 @@
+{
+  "$schema": "config.schema.json",
+  "rules": {
+    "options": ["VERY EVIL CANDIDATE", "SLIGHTLY LESS EVIL CANDIDATE"],
+    "scoring": {
+      "type": "plurality"
+    },
+    "weighting": {
+      "type": "uniform"
+    },
+    "quorum": {
+      "type": "min_ballots",
+      "min": 3
+    },
+    "tie_breaker": {
+      "type": "registration_order"
+    },
+    "winner_count": 1
+  },
+  "votes": [
+    {
+      "choices": ["VERY EVIL CANDIDATE"]
+    },
+    {
+      "choices": ["SLIGHTLY LESS EVIL CANDIDATE"]
+    },
+    {
+      "choices": ["SLIGHTLY LESS EVIL CANDIDATE"]
+    }
+  ]
+}

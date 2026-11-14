@@ -1,6 +1,13 @@
 pub mod academic;
 pub mod budget;
 pub mod condo;
+pub mod crypto;
+pub mod custom;
 pub mod election;
+pub mod factory;
+pub mod identity;
+pub mod manifest;
+pub mod merkle;
+pub mod scoreboard;
 pub mod storage;
 pub mod strategy;

@@ -1,17 +1,18 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::Display,
-};
+use serde::{Deserialize, Serialize};
+use std::{collections::HashSet, fmt::Display};
 
 use crate::{
     domain::{
         election::{Election, Open},
+        scoreboard::Scoreboard,
         strategy::TallyStrategy,
     },
     error::{AcademicElectionError, ElectionError},
+    types::Score,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Slate {
     name: String,
 }
@@ -37,7 +38,7 @@ impl Slate {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AcademicOutcome {
     Winner(Slate),
     Tie(Vec<Slate>),
@@ -72,29 +73,19 @@ impl TallyStrategy for AcademicStrategy {
             return Ok(AcademicOutcome::QuorumNotMet);
         }
 
-        let mut counts: HashMap<&Slate, usize> = HashMap::new();
+        let mut scoreboard = Scoreboard::new();
         for vote in votes {
-            *counts.entry(vote).or_insert(0) += 1;
+            scoreboard.add_score(vote.clone(), Score::ONE);
         }
 
-        let mut max_votes = 0;
-        let mut winners = Vec::new();
+        let (_, mut winners) = scoreboard.get_winners();
 
-        for (&slate, &count) in counts.iter() {
-            if count > max_votes {
-                max_votes = count;
-                winners.clear();
-                winners.push(slate.clone());
-            } else if count == max_votes {
-                winners.push(slate.clone());
-            }
-        }
-
-        if winners.len() == 1 {
-            Ok(AcademicOutcome::Winner(winners.into_iter().next().unwrap()))
-        } else {
-            winners.sort_by(|a, b| a.name.cmp(&b.name));
+        if winners.len() > 1 {
             Ok(AcademicOutcome::Tie(winners))
+        } else if winners.len() == 1 {
+            Ok(AcademicOutcome::Winner(winners.remove(0)))
+        } else {
+            Err(ElectionError::TallyFailed("No votes cast".into()))
         }
     }
 }

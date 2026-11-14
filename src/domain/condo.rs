@@ -1,21 +1,49 @@
 use rust_decimal::Decimal;
-use std::collections::{HashMap, HashSet};
+use schemars::JsonSchema;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::HashSet;
 
 use crate::{
     domain::{
         election::{Election, Open},
+        scoreboard::Scoreboard,
         strategy::TallyStrategy,
     },
     error::{CondoElectionError, ElectionError},
+    types::{Percentage, Score},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CondoVote {
     pub choice: String,
-    pub fraction: Decimal,
+    #[schemars(with = "String")]
+    #[serde(with = "fraction_serde")]
+    pub fraction: Percentage,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+mod fraction_serde {
+    use super::*;
+
+    pub fn serialize<S>(fraction: &Percentage, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serde::Serialize::serialize(&(fraction.inner() / Decimal::ONE_HUNDRED), serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Percentage, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let fraction = <Decimal as Deserialize>::deserialize(deserializer)?;
+        let percentage = fraction
+            .checked_mul(Decimal::ONE_HUNDRED)
+            .ok_or_else(|| serde::de::Error::custom("Fraction is out of range"))?;
+        Percentage::try_from(percentage).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CondoOutcome {
     Winner(String),
     Tie(Vec<String>),
@@ -24,7 +52,7 @@ pub enum CondoOutcome {
 
 pub struct CondoStrategy {
     valid_options: HashSet<String>,
-    minimum_fraction_quorum: Decimal,
+    minimum_fraction_quorum: Percentage,
 }
 
 impl TallyStrategy for CondoStrategy {
@@ -39,7 +67,7 @@ impl TallyStrategy for CondoStrategy {
             )));
         }
 
-        if vote.fraction <= Decimal::ZERO || vote.fraction > Decimal::ONE {
+        if vote.fraction <= Percentage::ZERO {
             return Err(ElectionError::InvalidVote(
                 "Fraction must be strictly greater than 0 and up to 1.0".into(),
             ));
@@ -49,49 +77,41 @@ impl TallyStrategy for CondoStrategy {
     }
 
     fn tally(&self, votes: &[Self::Vote]) -> Result<Self::Outcome, ElectionError> {
-        let total_fraction: Decimal = votes.iter().map(|v| v.fraction).sum();
+        let total_fraction = votes
+            .iter()
+            .fold(Score::ZERO, |acc, vote| acc + Score::from(vote.fraction));
 
-        if total_fraction < self.minimum_fraction_quorum {
+        if total_fraction < Score::from(self.minimum_fraction_quorum) {
             return Ok(CondoOutcome::QuorumNotMet);
         }
 
-        let mut counts = HashMap::new();
+        let mut scoreboard = Scoreboard::new();
         for vote in votes {
-            *counts.entry(&vote.choice).or_insert(Decimal::ZERO) += vote.fraction;
+            scoreboard.add_score(vote.choice.clone(), Score::from(vote.fraction));
         }
 
-        let mut max_weight = Decimal::ZERO;
-        let mut winners = Vec::new();
+        let (_, mut winners) = scoreboard.get_winners();
 
-        for (choice, &weight) in counts.iter() {
-            if weight > max_weight {
-                max_weight = weight;
-                winners.clear();
-                winners.push((*choice).clone());
-            } else if weight == max_weight {
-                winners.push((*choice).clone());
-            }
-        }
-
-        if winners.len() == 1 {
+        if winners.len() > 1 {
+            Ok(CondoOutcome::Tie(winners))
+        } else if winners.len() == 1 {
             Ok(CondoOutcome::Winner(winners.remove(0)))
         } else {
-            winners.sort();
-            Ok(CondoOutcome::Tie(winners))
+            Ok(CondoOutcome::QuorumNotMet)
         }
     }
 }
 
 pub struct CondoElectionBuilder {
     options_input: Vec<String>,
-    minimum_fraction_quorum: Decimal,
+    minimum_fraction_quorum: Percentage,
 }
 
 impl Default for CondoElectionBuilder {
     fn default() -> Self {
         Self {
             options_input: Vec::new(),
-            minimum_fraction_quorum: Decimal::ZERO,
+            minimum_fraction_quorum: Percentage::ZERO,
         }
     }
 }
@@ -106,18 +126,12 @@ impl CondoElectionBuilder {
         self
     }
 
-    pub fn with_quorum(mut self, quorum: Decimal) -> Self {
+    pub fn with_quorum(mut self, quorum: Percentage) -> Self {
         self.minimum_fraction_quorum = quorum;
         self
     }
 
     pub fn build(self) -> Result<Election<CondoStrategy, Open>, CondoElectionError> {
-        if self.minimum_fraction_quorum < Decimal::ZERO
-            || self.minimum_fraction_quorum > Decimal::ONE
-        {
-            return Err(CondoElectionError::OutOfRangeQuorum);
-        }
-
         if self.options_input.is_empty() {
             return Err(CondoElectionError::NoOptionsRegistered);
         }
@@ -153,31 +167,44 @@ mod tests {
             .add_option("this")
             .add_option("that")
             .add_option("neither")
-            .with_quorum(dec!(0.51))
+            .with_quorum(Percentage::try_from(dec!(51)).unwrap())
             .build()
             .expect("Failed to build election");
 
         election
             .cast_vote(CondoVote {
                 choice: "this".into(),
-                fraction: dec!(0.1),
+                fraction: Percentage::try_from(dec!(10)).unwrap(),
             })
             .unwrap();
         election
             .cast_vote(CondoVote {
                 choice: "that".into(),
-                fraction: dec!(0.2),
+                fraction: Percentage::try_from(dec!(20)).unwrap(),
             })
             .unwrap();
         election
             .cast_vote(CondoVote {
                 choice: "neither".into(),
-                fraction: dec!(0.4),
+                fraction: Percentage::try_from(dec!(40)).unwrap(),
             })
             .unwrap();
 
         let result = election.close().compute_result().unwrap();
 
         assert_eq!(result, CondoOutcome::Winner("neither".into()));
+    }
+
+    #[test]
+    fn vote_serialization_preserves_fractional_json_values() {
+        let vote = CondoVote {
+            choice: "A".into(),
+            fraction: Percentage::try_from(dec!(75)).unwrap(),
+        };
+        let json = serde_json::to_string(&vote).unwrap();
+
+        assert_eq!(json, r#"{"choice":"A","fraction":"0.75"}"#);
+        assert_eq!(serde_json::from_str::<CondoVote>(&json).unwrap(), vote);
+        assert!(serde_json::from_str::<CondoVote>(r#"{"choice":"A","fraction":"1.01"}"#).is_err());
     }
 }

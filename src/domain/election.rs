@@ -2,6 +2,11 @@ use std::marker::PhantomData;
 
 use crate::{domain::strategy::TallyStrategy, error::ElectionError};
 
+pub(crate) enum VoteCommitError<E> {
+    Election(ElectionError),
+    Commit(E),
+}
+
 pub struct Open;
 pub struct Closed;
 
@@ -21,7 +26,22 @@ impl<S: TallyStrategy> Election<S, Open> {
     }
 
     pub fn cast_vote(&mut self, vote: S::Vote) -> Result<(), ElectionError> {
-        self.strategy.validate(&vote)?;
+        match self.cast_vote_with(vote, |_| Ok::<_, std::convert::Infallible>(())) {
+            Ok(()) => Ok(()),
+            Err(VoteCommitError::Election(error)) => Err(error),
+            Err(VoteCommitError::Commit(never)) => match never {},
+        }
+    }
+
+    pub(crate) fn cast_vote_with<E>(
+        &mut self,
+        vote: S::Vote,
+        commit: impl FnOnce(&S::Vote) -> Result<(), E>,
+    ) -> Result<(), VoteCommitError<E>> {
+        self.strategy
+            .validate(&vote)
+            .map_err(VoteCommitError::Election)?;
+        commit(&vote).map_err(VoteCommitError::Commit)?;
         self.votes.push(vote);
         Ok(())
     }
