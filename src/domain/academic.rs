@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
@@ -11,7 +12,8 @@ use crate::{
     error::{AcademicElectionError, ElectionError},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Slate {
     name: String,
 }
@@ -37,7 +39,7 @@ impl Slate {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AcademicOutcome {
     Winner(Slate),
     Tie(Vec<Slate>),

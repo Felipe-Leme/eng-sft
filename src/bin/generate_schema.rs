@@ -1,6 +1,6 @@
 use std::{env, error::Error, fs, path::PathBuf};
 
-use eng_sft::domain::custom::CustomElectionConfig;
+use eng_sft::domain::manifest::Manifest;
 use schemars::schema_for;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("Usage: generate_schema [output-path]".into());
     }
 
-    let schema = schema_for!(CustomElectionConfig);
+    let schema = schema_for!(Manifest);
     let json = serde_json::to_string_pretty(&schema)?;
     fs::write(&output_path, format!("{json}\n"))?;
     println!("Wrote JSON Schema to {}", output_path.display());

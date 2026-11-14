@@ -75,7 +75,7 @@ O projeto adota uma abordagem de **Kanban Contínuo** adaptada para equipe solo,
 | **Checklist de Sigilo/Arquitetura** | Garantir a separação entre identidade e conteúdo, e extensibilidade. |
 | **Relatórios de CI** | Registrar resultados de build, testes e análise estática. |
 
-## 5. Executando a eleição customizável
+## 5. Executando uma eleição
 
 O binário lê as regras e os votos de `src/config.json`, cria a eleição,
 valida e registra cada voto e, por fim, fecha e apura o resultado:
@@ -90,21 +90,44 @@ Para usar outra configuração, informe o caminho do arquivo JSON:
 cargo run -- caminho/para/config.json
 ```
 
-O JSON contém `rules` (opções, método de pontuação, ponderação, quórum,
-desempate e número de vencedores) e uma lista `votes` de cédulas. Os tipos
-discriminados das regras usam o campo `type`; o arquivo `src/config.json`
-serve como exemplo completo.
+O manifesto seleciona o tipo de eleição com o campo `type`: `academic`,
+`budget`, `condo` ou `custom`. Os três tipos padrão recebem suas definições e
+votos diretamente no manifesto. Por exemplo:
+
+```json
+{
+  "type": "academic",
+  "slates": ["A", "B"],
+  "minimum_quorum": 2,
+  "votes": ["A", "B"]
+}
+```
+
+Uma eleição `budget` usa `projects` (cada item com `name` e `cost`),
+`budget_ceiling` e votos ranqueados; `condo` usa `options`,
+`minimum_fraction_quorum` e votos com `choice` e `fraction`. Valores decimais
+são strings para preservar precisão. A factory retorna uma eleição atrás de
+`Box<dyn ElectionBoundary>`. Assim, chamadores como handlers HTTP podem passar
+um payload JSON para `cast_vote` e receber o resultado JSON de `close` sem
+conhecer o tipo concreto. Erros de conversão JSON e de validação são retornados
+como `String`.
+
+Para `custom`, o manifesto contém `rules` (opções, método de pontuação,
+ponderação, quórum, desempate e número de vencedores) e uma lista `votes` de
+cédulas. As formas personalizadas atuais, sem o campo `type`, continuam sendo
+aceitas. Os tipos discriminados das regras customizadas usam o campo `type`;
+`src/config.json` serve como exemplo completo.
 
 ## 6. Schema da configuração
 
-Gere o JSON Schema com descrições e dicas para editores que suportam schema
-JSON:
+Gere o JSON Schema do manifesto (eleições padrão e customizadas) com descrições
+e dicas para editores que suportam schema JSON:
 
 ```sh
 cargo run --bin generate_schema
 ```
 
 Por padrão, o comando atualiza `src/config.schema.json`. Um caminho de saída
-alternativo pode ser passado como argumento. Os campos decimais (`weight` e
-`quorum.min`) são descritos como strings decimais, evitando a perda de precisão
-que pode ocorrer ao representar valores decimais como números JSON.
+alternativo pode ser passado como argumento. Os campos decimais são descritos
+como strings, evitando a perda de precisão que pode ocorrer ao representar
+valores decimais como números JSON.

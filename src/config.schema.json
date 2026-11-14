@@ -1,25 +1,65 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "CustomElectionConfig",
-  "description": "JSON configuration accepted by the custom-election runner.",
-  "type": "object",
-  "properties": {
-    "rules": {
-      "$ref": "#/$defs/CustomRuleSet"
+  "title": "Manifest",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/TypedManifest"
     },
-    "votes": {
-      "description": "Every ballot is validated and cast before the election is tallied.",
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/CustomVote"
-      }
+    {
+      "$ref": "#/$defs/CustomElectionConfig"
     }
-  },
-  "required": [
-    "rules",
-    "votes"
   ],
   "$defs": {
+    "BudgetProject": {
+      "type": "object",
+      "properties": {
+        "cost": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "cost"
+      ]
+    },
+    "CondoVote": {
+      "type": "object",
+      "properties": {
+        "choice": {
+          "type": "string"
+        },
+        "fraction": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "choice",
+        "fraction"
+      ]
+    },
+    "CustomElectionConfig": {
+      "description": "JSON configuration accepted by the custom-election runner.",
+      "type": "object",
+      "properties": {
+        "rules": {
+          "$ref": "#/$defs/CustomRuleSet"
+        },
+        "votes": {
+          "description": "Every ballot is validated and cast before the election is tallied.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CustomVote"
+          }
+        }
+      },
+      "required": [
+        "rules",
+        "votes"
+      ]
+    },
     "CustomRuleSet": {
       "type": "object",
       "properties": {
@@ -222,6 +262,128 @@
           },
           "required": [
             "type"
+          ]
+        }
+      ]
+    },
+    "TypedManifest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "minimum_quorum": {
+              "type": "integer",
+              "format": "uint",
+              "default": 1,
+              "minimum": 0
+            },
+            "slates": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "academic"
+            },
+            "votes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "slates",
+            "votes"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "budget_ceiling": {
+              "type": "string"
+            },
+            "projects": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/BudgetProject"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "budget"
+            },
+            "votes": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "required": [
+            "type",
+            "projects",
+            "budget_ceiling",
+            "votes"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "minimum_fraction_quorum": {
+              "type": "string",
+              "default": "0"
+            },
+            "options": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "condo"
+            },
+            "votes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/CondoVote"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "options",
+            "votes"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "rules": {
+              "$ref": "#/$defs/CustomRuleSet"
+            },
+            "type": {
+              "type": "string",
+              "const": "custom"
+            },
+            "votes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/CustomVote"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "rules",
+            "votes"
           ]
         }
       ]
