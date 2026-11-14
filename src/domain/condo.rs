@@ -1,4 +1,6 @@
 use rust_decimal::Decimal;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use crate::{
@@ -9,13 +11,14 @@ use crate::{
     error::{CondoElectionError, ElectionError},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CondoVote {
     pub choice: String,
+    #[schemars(with = "String")]
     pub fraction: Decimal,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CondoOutcome {
     Winner(String),
     Tie(Vec<String>),

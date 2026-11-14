@@ -9,6 +9,7 @@ use eng_sft::{
             CustomVote,
         },
         election::{Election, Open},
+        factory::ElectionFactory,
         identity::{AnonymousBallotBox, EligibilityRegistry, TokenAllowList, VoterId},
         merkle::MerkleTree,
         storage::{ElectionEvent, EventRecord, EventStore, MemoryEventStore},
@@ -195,26 +196,16 @@ fn memory_event_store_enforces_sequential_appends() {
 
 #[test]
 fn custom_election_loads_json_config_validates_ballots_and_tallies() {
-    let config: CustomElectionConfig =
-        serde_json::from_str(include_str!("../src/config.json")).unwrap();
-    let strategy = CustomRuleStrategy::new(config.rules).unwrap();
-    let mut election: CustomElection<Open> = Election::new(strategy);
+    let mut election = ElectionFactory::from_file("src/config.json").unwrap();
 
     assert!(matches!(
-        election.cast_vote(CustomVote {
-            choices: vec!["Unknown".into()],
-            weight: dec!(1),
-        }),
-        Err(ElectionError::InvalidVote(_))
+        election.cast_vote(serde_json::json!({"choices": ["Unknown"], "weight": "1"})),
+        Err(message) if message.contains("Unknown option")
     ));
 
-    for vote in config.votes {
-        election.cast_vote(vote).unwrap();
-    }
-
     assert_eq!(
-        election.close().compute_result().unwrap(),
-        CustomOutcome::Winners(vec!["SLIGHTLY LESS EVIL CANDIDATE".into()])
+        election.close().unwrap(),
+        serde_json::json!({"Winners": ["SLIGHTLY LESS EVIL CANDIDATE"]})
     );
 }
 

@@ -1,9 +1,6 @@
-use std::{env, error::Error, fs, path::PathBuf};
+use std::{env, error::Error, path::PathBuf};
 
-use eng_sft::domain::{
-    custom::{CustomElection, CustomElectionConfig, CustomOutcome, CustomRuleStrategy},
-    election::{Election, Open},
-};
+use eng_sft::domain::factory::ElectionFactory;
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let config_path = args
@@ -14,17 +11,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("Usage: eng-sft [path/to/config.json]".into());
     }
 
-    let config_json = fs::read_to_string(&config_path)?;
-    let config: CustomElectionConfig = serde_json::from_str(&config_json)?;
-    let strategy = CustomRuleStrategy::new(config.rules)?;
-    let mut election: CustomElection<Open> = Election::new(strategy);
-
-    for vote in config.votes {
-        election.cast_vote(vote)?;
-    }
-
-    let outcome: CustomOutcome = election.close().compute_result()?;
-    println!("{outcome:?}");
+    let election = ElectionFactory::from_file(config_path)?;
+    let outcome = election.close().map_err(std::io::Error::other)?;
+    println!("{outcome}");
 
     Ok(())
 }
