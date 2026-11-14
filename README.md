@@ -74,3 +74,37 @@ O projeto adota uma abordagem de **Kanban Contínuo** adaptada para equipe solo,
 | **Núcleo E2E + API** | Implementar submissão, persistência lógica e evidências. |
 | **Checklist de Sigilo/Arquitetura** | Garantir a separação entre identidade e conteúdo, e extensibilidade. |
 | **Relatórios de CI** | Registrar resultados de build, testes e análise estática. |
+
+## 5. Executando a eleição customizável
+
+O binário lê as regras e os votos de `src/config.json`, cria a eleição,
+valida e registra cada voto e, por fim, fecha e apura o resultado:
+
+```sh
+cargo run
+```
+
+Para usar outra configuração, informe o caminho do arquivo JSON:
+
+```sh
+cargo run -- caminho/para/config.json
+```
+
+O JSON contém `rules` (opções, método de pontuação, ponderação, quórum,
+desempate e número de vencedores) e uma lista `votes` de cédulas. Os tipos
+discriminados das regras usam o campo `type`; o arquivo `src/config.json`
+serve como exemplo completo.
+
+## 6. Schema da configuração
+
+Gere o JSON Schema com descrições e dicas para editores que suportam schema
+JSON:
+
+```sh
+cargo run --bin generate_schema
+```
+
+Por padrão, o comando atualiza `src/config.schema.json`. Um caminho de saída
+alternativo pode ser passado como argumento. Os campos decimais (`weight` e
+`quorum.min`) são descritos como strings decimais, evitando a perda de precisão
+que pode ocorrer ao representar valores decimais como números JSON.

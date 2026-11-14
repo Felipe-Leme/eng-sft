@@ -4,6 +4,11 @@ use eng_sft::{
         budget::{BudgetElectionBuilder, BudgetOutcome, Project},
         condo::{CondoElectionBuilder, CondoOutcome, CondoVote},
         crypto::{GENESIS_HASH, HashedEventRecord, verify_chain},
+        custom::{
+            CustomElection, CustomElectionConfig, CustomOutcome, CustomRuleSet, CustomRuleStrategy,
+            CustomVote,
+        },
+        election::{Election, Open},
         identity::{AnonymousBallotBox, EligibilityRegistry, TokenAllowList, VoterId},
         merkle::MerkleTree,
         storage::{ElectionEvent, EventRecord, EventStore, MemoryEventStore},
@@ -186,4 +191,90 @@ fn memory_event_store_enforces_sequential_appends() {
         }
     );
     assert_eq!(store.current_sequence(), 1);
+}
+
+#[test]
+fn custom_election_loads_json_config_validates_ballots_and_tallies() {
+    let config: CustomElectionConfig =
+        serde_json::from_str(include_str!("../src/config.json")).unwrap();
+    let strategy = CustomRuleStrategy::new(config.rules).unwrap();
+    let mut election: CustomElection<Open> = Election::new(strategy);
+
+    assert!(matches!(
+        election.cast_vote(CustomVote {
+            choices: vec!["Unknown".into()],
+            weight: dec!(1),
+        }),
+        Err(ElectionError::InvalidVote(_))
+    ));
+
+    for vote in config.votes {
+        election.cast_vote(vote).unwrap();
+    }
+
+    assert_eq!(
+        election.close().compute_result().unwrap(),
+        CustomOutcome::Winners(vec!["SLIGHTLY LESS EVIL CANDIDATE".into()])
+    );
+}
+
+#[test]
+fn custom_election_schema_describes_decimal_fields_as_strings() {
+    let schema = schemars::schema_for!(CustomElectionConfig);
+    let schema_json = serde_json::to_value(schema).unwrap();
+    let definitions = schema_json["$defs"].as_object().unwrap();
+    let decimal_schema = &definitions["CustomVote"]["properties"]["weight"];
+    let quorum_decimal_schema = &definitions["QuorumRule"]["oneOf"][2]["properties"]["min"];
+
+    assert_eq!(decimal_schema["type"], "string");
+    assert!(
+        decimal_schema["description"]
+            .as_str()
+            .unwrap()
+            .contains("decimal string")
+    );
+    assert_eq!(decimal_schema["default"], "1.0");
+    assert_eq!(quorum_decimal_schema["type"], "string");
+    assert!(
+        quorum_decimal_schema["description"]
+            .as_str()
+            .unwrap()
+            .contains("decimal string")
+    );
+
+    let vote = CustomVote {
+        choices: vec!["A".into()],
+        weight: dec!(0.15),
+    };
+    let serialized = serde_json::to_value(&vote).unwrap();
+    assert_eq!(serialized["weight"], "0.15");
+    assert_eq!(
+        serde_json::from_value::<CustomVote>(serialized).unwrap(),
+        vote
+    );
+}
+
+#[test]
+fn custom_election_reports_unmet_ballot_quorum() {
+    let strategy = CustomRuleStrategy::new(CustomRuleSet {
+        options: vec!["A".into(), "B".into()],
+        scoring: eng_sft::domain::custom::ScoringRule::Plurality,
+        weighting: eng_sft::domain::custom::WeightingRule::Uniform,
+        quorum: eng_sft::domain::custom::QuorumRule::MinBallots { min: 2 },
+        tie_breaker: eng_sft::domain::custom::TieBreakerRule::Alphabetical,
+        winner_count: 1,
+    })
+    .unwrap();
+    let mut election: CustomElection<Open> = Election::new(strategy);
+    election
+        .cast_vote(CustomVote {
+            choices: vec!["B".into()],
+            weight: dec!(1),
+        })
+        .unwrap();
+
+    assert_eq!(
+        election.close().compute_result().unwrap(),
+        CustomOutcome::QuorumNotMet
+    );
 }

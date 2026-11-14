@@ -2,6 +2,7 @@ pub mod academic;
 pub mod budget;
 pub mod condo;
 pub mod crypto;
+pub mod custom;
 pub mod election;
 pub mod identity;
 pub mod merkle;
