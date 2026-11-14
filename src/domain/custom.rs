@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rust_decimal::{Decimal, dec, prelude::FromPrimitive};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -8,20 +9,24 @@ use crate::{
     error::{CustomElectionError, ElectionError},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ScoringRule {
     /// Voter picks exactly 1 option; it receives one point per unit of weight.
     Plurality,
 
     /// Voter picks 1..=max_choices options; each selected option receives one point per unit of weight.
-    Approval { max_choices: usize },
+    Approval {
+        /// Maximum options each voter may select; must be at least 1.
+        #[schemars(range(min = 1))]
+        max_choices: usize,
+    },
 
     /// Voter ranks 1..=options.len() choices; rank i gets (N - 1 - i) * weight.
     RankedBorda,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WeightingRule {
     /// Every valid ballot has weight 1 (ignores ballot weight field).
@@ -31,15 +36,22 @@ pub enum WeightingRule {
     Weighted,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum QuorumRule {
     None,
-    MinBallots { min: usize },
-    MinTotalWeight { min: Decimal },
+    MinBallots {
+        min: usize,
+    },
+    /// Minimum participating weight, represented as a decimal string (for example `"0.75"`).
+    MinTotalWeight {
+        /// Non-negative decimal string, for example `"1.25"`.
+        #[schemars(with = "String")]
+        min: Decimal,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TieBreakerRule {
     /// Returns CustomOutcome::Tie when a tie crosses the winner cutoff.
@@ -52,14 +64,18 @@ pub enum TieBreakerRule {
     RegistrationOrder,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CustomRuleSet {
+    /// Registered options. Their order is used by `registration_order` ties.
+    #[schemars(length(min = 1))]
     pub options: Vec<String>,
     pub scoring: ScoringRule,
     pub weighting: WeightingRule,
     pub quorum: QuorumRule,
     pub tie_breaker: TieBreakerRule,
+    /// Number of winners to return. Defaults to 1 when omitted.
     #[serde(default = "default_winner_count")]
+    #[schemars(range(min = 1), default = "default_winner_count")]
     pub winner_count: usize,
 }
 
@@ -67,17 +83,27 @@ fn default_winner_count() -> usize {
     1
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CustomVote {
-    /// Ordered list of chosen option names (one for Plurality, one or more for Approval/Borda).
+    /// Selected or ranked options, in ballot order. Names must match registered options.
+    #[schemars(length(min = 1), inner(length(min = 1)))]
     pub choices: Vec<String>,
-    /// Voter weight (e.g., 1 for standard, 0.15 for a 15% share).
+    /// Positive decimal string when weighted voting is enabled; defaults to `"1.0"`.
     #[serde(default = "default_weight")]
+    #[schemars(with = "String", default = "default_weight")]
     pub weight: Decimal,
 }
 
 fn default_weight() -> Decimal {
     dec!(1.0)
+}
+
+/// JSON configuration accepted by the custom-election runner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CustomElectionConfig {
+    pub rules: CustomRuleSet,
+    /// Every ballot is validated and cast before the election is tallied.
+    pub votes: Vec<CustomVote>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -94,3 +94,17 @@ O JSON contém `rules` (opções, método de pontuação, ponderação, quórum,
 desempate e número de vencedores) e uma lista `votes` de cédulas. Os tipos
 discriminados das regras usam o campo `type`; o arquivo `src/config.json`
 serve como exemplo completo.
+
+## 6. Schema da configuração
+
+Gere o JSON Schema com descrições e dicas para editores que suportam schema
+JSON:
+
+```sh
+cargo run --bin generate_schema
+```
+
+Por padrão, o comando atualiza `src/config.schema.json`. Um caminho de saída
+alternativo pode ser passado como argumento. Os campos decimais (`weight` e
+`quorum.min`) são descritos como strings decimais, evitando a perda de precisão
+que pode ocorrer ao representar valores decimais como números JSON.

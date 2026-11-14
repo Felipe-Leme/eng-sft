@@ -1,4 +1,5 @@
 {
+  "$schema": "config.schema.json",
   "rules": {
     "options": ["VERY EVIL CANDIDATE", "SLIGHTLY LESS EVIL CANDIDATE"],
     "scoring": {

@@ -3,10 +3,12 @@ name = "eng-sft"
 version = "0.1.0"
 edition = "2024"
 publish = false
+default-run = "eng-sft"
 
 [dependencies]
 chrono = { version = "0.4.45", features = ["serde"] }
 rust_decimal = { version = "1.43.0", features = ["macros"] }
+schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"

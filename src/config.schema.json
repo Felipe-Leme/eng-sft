@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CustomElectionConfig",
+  "description": "JSON configuration accepted by the custom-election runner.",
+  "type": "object",
+  "properties": {
+    "rules": {
+      "$ref": "#/$defs/CustomRuleSet"
+    },
+    "votes": {
+      "description": "Every ballot is validated and cast before the election is tallied.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CustomVote"
+      }
+    }
+  },
+  "required": [
+    "rules",
+    "votes"
+  ],
+  "$defs": {
+    "CustomRuleSet": {
+      "type": "object",
+      "properties": {
+        "options": {
+          "description": "Registered options. Their order is used by `registration_order` ties.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "quorum": {
+          "$ref": "#/$defs/QuorumRule"
+        },
+        "scoring": {
+          "$ref": "#/$defs/ScoringRule"
+        },
+        "tie_breaker": {
+          "$ref": "#/$defs/TieBreakerRule"
+        },
+        "weighting": {
+          "$ref": "#/$defs/WeightingRule"
+        },
+        "winner_count": {
+          "description": "Number of winners to return. Defaults to 1 when omitted.",
+          "type": "integer",
+          "format": "uint",
+          "default": 1,
+          "minimum": 1
+        }
+      },
+      "required": [
+        "options",
+        "scoring",
+        "weighting",
+        "quorum",
+        "tie_breaker"
+      ]
+    },
+    "CustomVote": {
+      "type": "object",
+      "properties": {
+        "choices": {
+          "description": "Selected or ranked options, in ballot order. Names must match registered options.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "weight": {
+          "description": "Positive decimal string when weighted voting is enabled; defaults to `\"1.0\"`.",
+          "type": "string",
+          "default": "1.0"
+        }
+      },
+      "required": [
+        "choices"
+      ]
+    },
+    "QuorumRule": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "none"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "min": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "min_ballots"
+            }
+          },
+          "required": [
+            "type",
+            "min"
+          ]
+        },
+        {
+          "description": "Minimum participating weight, represented as a decimal string (for example `\"0.75\"`).",
+          "type": "object",
+          "properties": {
+            "min": {
+              "description": "Non-negative decimal string, for example `\"1.25\"`.",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "min_total_weight"
+            }
+          },
+          "required": [
+            "type",
+            "min"
+          ]
+        }
+      ]
+    },
+    "ScoringRule": {
+      "oneOf": [
+        {
+          "description": "Voter picks exactly 1 option; it receives one point per unit of weight.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "plurality"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Voter picks 1..=max_choices options; each selected option receives one point per unit of weight.",
+          "type": "object",
+          "properties": {
+            "max_choices": {
+              "description": "Maximum options each voter may select; must be at least 1.",
+              "type": "integer",
+              "format": "uint",
+              "minimum": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "approval"
+            }
+          },
+          "required": [
+            "type",
+            "max_choices"
+          ]
+        },
+        {
+          "description": "Voter ranks 1..=options.len() choices; rank i gets (N - 1 - i) * weight.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "ranked_borda"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "TieBreakerRule": {
+      "oneOf": [
+        {
+          "description": "Returns CustomOutcome::Tie when a tie crosses the winner cutoff.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "allow_tie"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Breaks ties lexicographically (A -> Z).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "alphabetical"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Breaks ties using the order options were registered in the election config.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "registration_order"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "WeightingRule": {
+      "oneOf": [
+        {
+          "description": "Every valid ballot has weight 1 (ignores ballot weight field).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "uniform"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Ballot weight is multiplied into the score (must be positive).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "weighted"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    }
+  }
+}

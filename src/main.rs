@@ -1,17 +1,9 @@
 use std::{env, error::Error, fs, path::PathBuf};
 
 use eng_sft::domain::{
-    custom::{CustomElection, CustomOutcome, CustomRuleSet, CustomRuleStrategy, CustomVote},
+    custom::{CustomElection, CustomElectionConfig, CustomOutcome, CustomRuleStrategy},
     election::{Election, Open},
 };
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct ElectionConfig {
-    rules: CustomRuleSet,
-    votes: Vec<CustomVote>,
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let config_path = args
@@ -23,7 +15,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let config_json = fs::read_to_string(&config_path)?;
-    let config: ElectionConfig = serde_json::from_str(&config_json)?;
+    let config: CustomElectionConfig = serde_json::from_str(&config_json)?;
     let strategy = CustomRuleStrategy::new(config.rules)?;
     let mut election: CustomElection<Open> = Election::new(strategy);
 
