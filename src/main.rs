@@ -1,18 +1,32 @@
-use std::{env, error::Error, path::PathBuf};
+use std::{env, error::Error, io, path::PathBuf};
 
 use eng_sft::domain::factory::ElectionFactory;
-fn main() -> Result<(), Box<dyn Error>> {
-    let mut args = env::args_os().skip(1);
-    let config_path = args
-        .next()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("src/config.json"));
-    if args.next().is_some() {
-        return Err("Usage: eng-sft [path/to/config.json]".into());
-    }
+use tokio::net::TcpListener;
 
+pub mod api;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let args: Vec<_> = env::args_os().skip(1).collect();
+    match args.as_slice() {
+        [] => run_server().await,
+        [command] if command == "serve" => run_server().await,
+        [config_path] => run_config(PathBuf::from(config_path)),
+        _ => Err("Usage: eng-sft [serve | path/to/config.json]".into()),
+    }
+}
+
+async fn run_server() -> Result<(), Box<dyn Error>> {
+    let address = "127.0.0.1:3000";
+    let listener = TcpListener::bind(address).await?;
+    println!("HTTP API listening at http://{address}");
+    axum::serve(listener, api::app_router()).await?;
+    Ok(())
+}
+
+fn run_config(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     let election = ElectionFactory::from_file(config_path)?;
-    let outcome = election.close().map_err(std::io::Error::other)?;
+    let outcome = election.close().map_err(io::Error::other)?;
     println!("{outcome}");
 
     Ok(())
