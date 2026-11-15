@@ -83,7 +83,8 @@ Inicie o servidor local:
 cargo run
 ```
 
-Ele escuta em `http://localhost:3000` e oferece estes endpoints:
+O servidor cria e usa o arquivo SQLite local `eng-sft.db` no diretório de
+execução. Ele escuta em `http://localhost:3000` e oferece estes endpoints:
 
 | Método | Caminho | Descrição |
 | ----- | ----- | ----- |
@@ -94,9 +95,10 @@ Ele escuta em `http://localhost:3000` e oferece estes endpoints:
 O corpo de `POST /api/elections` tem o mesmo formato de manifesto descrito
 abaixo. Cada voto deve ser JSON no formato esperado pelo tipo da eleição; por
 exemplo, uma eleição acadêmica recebe uma string como `"A"`. O endpoint de
-fechamento consome a eleição, portanto ela não poderá receber mais votos nem
-ser fechada novamente. Erros da API retornam um status HTTP apropriado e um
-objeto JSON com a mensagem em `error`.
+fechamento persiste o resultado e impede novos votos ou fechamentos. Os
+manifestos, resultados e eventos de voto encadeados por hash são persistidos no
+banco. Erros da API retornam um status HTTP apropriado e um objeto JSON com a
+mensagem em `error`.
 
 Exemplo criando e votando em uma eleição acadêmica:
 
