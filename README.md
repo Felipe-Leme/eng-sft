@@ -123,6 +123,10 @@ localmente sem iniciar o servidor, passe o caminho do manifesto:
 cargo run -- caminho/para/config.json
 ```
 
+O comando de configuração usa a implementação em memória de `Infrastructure`;
+o servidor injeta a implementação SQLite. O serviço de eleições é o mesmo nos
+dois casos e pode ser ligado a qualquer implementação dessa interface.
+
 O manifesto seleciona o tipo de eleição com o campo `type`: `academic`,
 `budget`, `condo` ou `custom`. Os três tipos padrão recebem suas definições e
 votos diretamente no manifesto. Por exemplo:

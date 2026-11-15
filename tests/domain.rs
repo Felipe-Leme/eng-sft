@@ -12,9 +12,10 @@ use eng_sft::{
         factory::ElectionFactory,
         identity::{AnonymousBallotBox, EligibilityRegistry, TokenAllowList, VoterId},
         merkle::MerkleTree,
-        storage::{ElectionEvent, EventRecord, EventStore, MemoryEventStore},
+        storage::{ElectionEvent, EventRecord, Infrastructure},
     },
     error::{ElectionError, IdentityError, VotingFacadeError},
+    infrastructure::MemoryInfrastructure,
     types::Percentage,
 };
 use rust_decimal::dec;
@@ -42,8 +43,8 @@ fn academic_election_rejects_unknown_slate_and_tallies_votes() {
     );
 }
 
-#[test]
-fn anonymous_voting_issues_one_use_tokens_and_returns_auditable_tally() {
+#[tokio::test]
+async fn anonymous_voting_issues_one_use_tokens_and_returns_auditable_tally() {
     let voter = VoterId("student-1".into());
     let outsider = VoterId("outsider".into());
     let mut registry = EligibilityRegistry::new(vec![voter.clone()]);
@@ -64,22 +65,30 @@ fn anonymous_voting_issues_one_use_tokens_and_returns_auditable_tally() {
         .add_slate("BLUE")
         .build()
         .unwrap();
-    let mut ballot_box =
-        AnonymousBallotBox::new(election, MemoryEventStore::new(), allowlist).unwrap();
+    let mut ballot_box = AnonymousBallotBox::new(
+        election,
+        MemoryInfrastructure::<Slate, AcademicOutcome>::new(),
+        allowlist,
+    )
+    .await
+    .unwrap();
     let red = Slate::new("RED").unwrap();
-    ballot_box.cast_anonymous_vote(&token, red.clone()).unwrap();
+    ballot_box
+        .cast_anonymous_vote(&token, red.clone())
+        .await
+        .unwrap();
     assert_eq!(
-        ballot_box.cast_anonymous_vote(&token, red.clone()),
+        ballot_box.cast_anonymous_vote(&token, red.clone()).await,
         Err(VotingFacadeError::Identity(
             IdentityError::InvalidOrSpentToken
         ))
     );
 
-    let tally = ballot_box.close_and_tally().unwrap();
+    let tally = ballot_box.close_and_tally().await.unwrap();
     assert_eq!(tally.outcome, AcademicOutcome::Winner(red));
     assert_eq!(tally.election.compute_result().unwrap(), tally.outcome);
 
-    let events = tally.store.get_all().unwrap();
+    let events = tally.store.get_all(&tally.stream_id).await.unwrap();
     assert_eq!(events.len(), 4);
     assert!(matches!(events[1].payload, ElectionEvent::VoteCast(_)));
     assert_eq!(events[3].sequence, 4);
@@ -175,15 +184,17 @@ fn hashed_event_chain_and_merkle_proof_verify() {
     assert!(proof.verify(&tree.root()));
 }
 
-#[test]
-fn memory_event_store_enforces_sequential_appends() {
-    let mut store = MemoryEventStore::<String, String>::new();
+#[tokio::test]
+async fn memory_infrastructure_enforces_sequential_appends() {
+    let store = MemoryInfrastructure::<String, String>::new();
     store
-        .append(EventRecord::new(1, ElectionEvent::ElectionCreated))
+        .append("test", EventRecord::new(1, ElectionEvent::ElectionCreated))
+        .await
         .unwrap();
 
     let error = store
-        .append(EventRecord::new(3, ElectionEvent::ElectionClosed))
+        .append("test", EventRecord::new(3, ElectionEvent::ElectionClosed))
+        .await
         .unwrap_err();
     assert_eq!(
         error,
@@ -192,7 +203,7 @@ fn memory_event_store_enforces_sequential_appends() {
             got: 3,
         }
     );
-    assert_eq!(store.current_sequence(), 1);
+    assert_eq!(store.current_sequence("test").await.unwrap(), 1);
 }
 
 #[test]

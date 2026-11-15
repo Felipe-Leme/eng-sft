@@ -75,13 +75,17 @@ impl ElectionFactory {
     }
 
     pub fn from_json(json: &str) -> Result<OpenElection, ElectionFactoryError> {
+        Self::create(Self::parse_manifest(json)?)
+    }
+
+    pub fn parse_manifest(json: &str) -> Result<Manifest, ElectionFactoryError> {
         let value: serde_json::Value = serde_json::from_str(json)?;
         let manifest = if value.get("type").is_some() {
             Manifest::Typed(serde_json::from_value(value)?)
         } else {
             Manifest::Custom(serde_json::from_value(value)?)
         };
-        Self::create(manifest)
+        Ok(manifest)
     }
 
     pub fn create(manifest: Manifest) -> Result<OpenElection, ElectionFactoryError> {
