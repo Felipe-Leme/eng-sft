@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
+
 use uuid::Uuid;
 
 use crate::{
     domain::{
-        election::{Closed, Election, Open, VoteCommitError},
-        storage::{ElectionEvent, EventRecord, EventStore},
+        election::{Closed, Election, Open},
+        storage::{ElectionEvent, EventRecord, Infrastructure},
         strategy::TallyStrategy,
     },
     error::{IdentityError, VotingFacadeError},
@@ -76,41 +77,50 @@ impl TokenAllowList {
     }
 }
 
-pub struct TalliedElection<S: TallyStrategy, E> {
+pub struct TalliedElection<S: TallyStrategy, I> {
     pub election: Election<S, Closed>,
     pub outcome: S::Outcome,
-    pub store: E,
+    pub store: I,
+    pub stream_id: String,
 }
 
-pub struct AnonymousBallotBox<S: TallyStrategy, E> {
+pub struct AnonymousBallotBox<S: TallyStrategy, I> {
     election: Election<S, Open>,
-    store: E,
+    store: I,
+    stream_id: String,
     allowlist: TokenAllowList,
 }
 
-impl<S, E> AnonymousBallotBox<S, E>
+impl<S, I> AnonymousBallotBox<S, I>
 where
     S: TallyStrategy,
-    S::Vote: Clone,
-    S::Outcome: Clone,
-    E: EventStore<S::Vote, S::Outcome>,
+    S::Vote: Clone + Send + Sync + 'static,
+    S::Outcome: Clone + Send + Sync + 'static,
+    I: Infrastructure<S::Vote, S::Outcome>,
 {
-    pub fn new(
+    pub async fn new(
         election: Election<S, Open>,
-        mut store: E,
+        store: I,
         allowlist: TokenAllowList,
     ) -> Result<Self, VotingFacadeError> {
-        let seq = store.current_sequence() + 1;
-        store.append(EventRecord::new(seq, ElectionEvent::ElectionCreated))?;
+        let stream_id = Uuid::new_v4().to_string();
+        let seq = next_sequence(store.current_sequence(&stream_id).await?)?;
+        store
+            .append(
+                &stream_id,
+                EventRecord::new(seq, ElectionEvent::ElectionCreated),
+            )
+            .await?;
 
         Ok(Self {
             election,
             store,
+            stream_id,
             allowlist,
         })
     }
 
-    pub fn cast_anonymous_vote(
+    pub async fn cast_anonymous_vote(
         &mut self,
         token: &BlindToken,
         vote: S::Vote,
@@ -120,88 +130,155 @@ where
         }
 
         self.election
-            .cast_vote_with(vote, |vote| {
-                let seq = self.store.current_sequence() + 1;
-                self.store
-                    .append(EventRecord::new(seq, ElectionEvent::VoteCast(vote.clone())))
-            })
-            .map_err(|error| match error {
-                VoteCommitError::Election(error) => VotingFacadeError::Election(error),
-                VoteCommitError::Commit(error) => VotingFacadeError::Storage(error),
+            .validate_vote(&vote)
+            .map_err(VotingFacadeError::Election)?;
+        let sequence = self
+            .store
+            .current_sequence(&self.stream_id)
+            .await?
+            .checked_add(1)
+            .ok_or_else(|| {
+                VotingFacadeError::Storage(crate::error::StorageError::AppendFailed(
+                    "Event sequence overflow".to_owned(),
+                ))
             })?;
+        self.store
+            .append(
+                &self.stream_id,
+                EventRecord::new(sequence, ElectionEvent::VoteCast(vote.clone())),
+            )
+            .await?;
+        self.election.record_validated_vote(vote);
         self.allowlist.consume(token);
 
         Ok(())
     }
 
-    pub fn close_and_tally(mut self) -> Result<TalliedElection<S, E>, VotingFacadeError> {
+    pub async fn close_and_tally(self) -> Result<TalliedElection<S, I>, VotingFacadeError> {
         let closed_election = self.election.close();
         let outcome = closed_election.compute_result()?;
 
-        let seq_close = self.store.current_sequence() + 1;
+        let seq_close = next_sequence(self.store.current_sequence(&self.stream_id).await?)?;
         self.store
-            .append(EventRecord::new(seq_close, ElectionEvent::ElectionClosed))?;
+            .append(
+                &self.stream_id,
+                EventRecord::new(seq_close, ElectionEvent::ElectionClosed),
+            )
+            .await?;
 
-        let seq_tally = self.store.current_sequence() + 1;
-        self.store.append(EventRecord::new(
-            seq_tally,
-            ElectionEvent::TallyComputed(outcome.clone()),
-        ))?;
+        let seq_tally = next_sequence(self.store.current_sequence(&self.stream_id).await?)?;
+        self.store
+            .append(
+                &self.stream_id,
+                EventRecord::new(seq_tally, ElectionEvent::TallyComputed(outcome.clone())),
+            )
+            .await?;
 
         Ok(TalliedElection {
             election: closed_election,
             outcome,
             store: self.store,
+            stream_id: self.stream_id,
         })
     }
+}
+
+fn next_sequence(current: u64) -> Result<u64, VotingFacadeError> {
+    current.checked_add(1).ok_or_else(|| {
+        VotingFacadeError::Storage(crate::error::StorageError::AppendFailed(
+            "Event sequence overflow".to_owned(),
+        ))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use crate::domain::{
         academic::{AcademicElectionBuilder, AcademicOutcome, Slate},
-        storage::MemoryEventStore,
+        storage::PersistedElection,
     };
     use crate::error::StorageError;
+    use crate::infrastructure::MemoryInfrastructure;
+    use tokio::sync::Mutex;
 
     use super::*;
 
     struct FailOnceOnVoteStore {
-        inner: MemoryEventStore<Slate, AcademicOutcome>,
-        fail_next_vote: bool,
+        inner: MemoryInfrastructure<Slate, AcademicOutcome>,
+        fail_next_vote: Mutex<bool>,
     }
 
-    impl EventStore<Slate, AcademicOutcome> for FailOnceOnVoteStore {
-        fn append(
-            &mut self,
+    #[async_trait::async_trait]
+    impl Infrastructure<Slate, AcademicOutcome> for FailOnceOnVoteStore {
+        async fn create_election(&self, id: String, manifest: String) -> Result<(), StorageError> {
+            self.inner.create_election(id, manifest).await
+        }
+
+        async fn get_election(&self, id: &str) -> Result<Option<PersistedElection>, StorageError> {
+            self.inner.get_election(id).await
+        }
+
+        async fn append_vote_event(
+            &self,
+            id: &str,
+            event: crate::domain::crypto::HashedEventRecord<serde_json::Value, serde_json::Value>,
+        ) -> Result<(), StorageError> {
+            self.inner.append_vote_event(id, event).await
+        }
+
+        async fn close_election(
+            &self,
+            id: &str,
+            expected_vote_sequence: u64,
+            outcome: serde_json::Value,
+        ) -> Result<(), StorageError> {
+            self.inner
+                .close_election(id, expected_vote_sequence, outcome)
+                .await
+        }
+
+        async fn append(
+            &self,
+            stream_id: &str,
             record: EventRecord<Slate, AcademicOutcome>,
         ) -> Result<(), StorageError> {
-            if self.fail_next_vote && matches!(&record.payload, ElectionEvent::VoteCast(_)) {
-                self.fail_next_vote = false;
+            let fail = if matches!(&record.payload, ElectionEvent::VoteCast(_)) {
+                let mut fail_next_vote = self.fail_next_vote.lock().await;
+                let fail = *fail_next_vote;
+                *fail_next_vote = false;
+                fail
+            } else {
+                false
+            };
+            if fail {
                 return Err(StorageError::AppendFailed("simulated failure".into()));
             }
 
-            self.inner.append(record)
+            self.inner.append(stream_id, record).await
         }
 
-        fn get_all(&self) -> Result<Vec<EventRecord<Slate, AcademicOutcome>>, StorageError> {
-            self.inner.get_all()
-        }
-
-        fn get_since(
+        async fn get_all(
             &self,
+            stream_id: &str,
+        ) -> Result<Vec<EventRecord<Slate, AcademicOutcome>>, StorageError> {
+            self.inner.get_all(stream_id).await
+        }
+
+        async fn get_since(
+            &self,
+            stream_id: &str,
             sequence: u64,
         ) -> Result<Vec<EventRecord<Slate, AcademicOutcome>>, StorageError> {
-            self.inner.get_since(sequence)
+            self.inner.get_since(stream_id, sequence).await
         }
 
-        fn current_sequence(&self) -> u64 {
-            self.inner.current_sequence()
+        async fn current_sequence(&self, stream_id: &str) -> Result<u64, StorageError> {
+            self.inner.current_sequence(stream_id).await
         }
     }
 
-    #[test]
-    fn test_full_anonymous_voting_flow() {
+    #[tokio::test]
+    async fn test_full_anonymous_voting_flow() {
         let student_a = VoterId("ra000000".into());
         let student_b = VoterId("ra111111".into());
         let outsider = VoterId("ra222222".into());
@@ -228,19 +305,23 @@ mod tests {
             .with_quorum(2)
             .build()
             .unwrap();
-        let store = MemoryEventStore::new();
-        let mut ballot_box = AnonymousBallotBox::new(election, store, allowlist).unwrap();
+        let store = MemoryInfrastructure::new();
+        let mut ballot_box = AnonymousBallotBox::new(election, store, allowlist)
+            .await
+            .unwrap();
 
         let xyz = Slate::new("XYZ").unwrap();
         ballot_box
             .cast_anonymous_vote(&token_a, xyz.clone())
+            .await
             .unwrap();
         ballot_box
             .cast_anonymous_vote(&token_b, xyz.clone())
+            .await
             .unwrap();
 
         assert_eq!(
-            ballot_box.cast_anonymous_vote(&token_a, xyz.clone()),
+            ballot_box.cast_anonymous_vote(&token_a, xyz.clone()).await,
             Err(VotingFacadeError::Identity(
                 IdentityError::InvalidOrSpentToken
             ))
@@ -248,19 +329,22 @@ mod tests {
 
         let forged = BlindToken::generate();
         assert_eq!(
-            ballot_box.cast_anonymous_vote(&forged, xyz.clone()),
+            ballot_box.cast_anonymous_vote(&forged, xyz.clone()).await,
             Err(VotingFacadeError::Identity(
                 IdentityError::InvalidOrSpentToken
             ))
         );
 
-        let tally = ballot_box.close_and_tally().unwrap();
+        let tally = ballot_box.close_and_tally().await.unwrap();
         assert_eq!(tally.outcome, AcademicOutcome::Winner(xyz));
-        assert_eq!(tally.store.get_all().unwrap().len(), 5); // Created + 2 Votes + Closed + Tallied.
+        assert_eq!(
+            tally.store.get_all(&tally.stream_id).await.unwrap().len(),
+            5
+        );
     }
 
-    #[test]
-    fn invalid_vote_does_not_spend_token_or_write_an_event() {
+    #[tokio::test]
+    async fn invalid_vote_does_not_spend_token_or_write_an_event() {
         let voter = VoterId("ra000001".into());
         let mut registry = EligibilityRegistry::new(vec![voter.clone()]);
         let mut allowlist = TokenAllowList::new();
@@ -269,12 +353,14 @@ mod tests {
             .add_slate("ABC")
             .build()
             .unwrap();
-        let store = MemoryEventStore::new();
-        let mut ballot_box = AnonymousBallotBox::new(election, store, allowlist).unwrap();
+        let store = MemoryInfrastructure::new();
+        let mut ballot_box = AnonymousBallotBox::new(election, store, allowlist)
+            .await
+            .unwrap();
 
         let invalid_slate = Slate::new("UNKNOWN").unwrap();
         assert!(matches!(
-            ballot_box.cast_anonymous_vote(&token, invalid_slate),
+            ballot_box.cast_anonymous_vote(&token, invalid_slate).await,
             Err(VotingFacadeError::Election(
                 crate::error::ElectionError::InvalidVote(_)
             ))
@@ -283,15 +369,19 @@ mod tests {
         let valid_slate = Slate::new("ABC").unwrap();
         ballot_box
             .cast_anonymous_vote(&token, valid_slate.clone())
+            .await
             .unwrap();
-        let tally = ballot_box.close_and_tally().unwrap();
+        let tally = ballot_box.close_and_tally().await.unwrap();
 
         assert_eq!(tally.outcome, AcademicOutcome::Winner(valid_slate));
-        assert_eq!(tally.store.get_all().unwrap().len(), 4);
+        assert_eq!(
+            tally.store.get_all(&tally.stream_id).await.unwrap().len(),
+            4
+        );
     }
 
-    #[test]
-    fn storage_failure_does_not_spend_token_or_accept_vote() {
+    #[tokio::test]
+    async fn storage_failure_does_not_spend_token_or_accept_vote() {
         let voter = VoterId("ra000004".into());
         let mut registry = EligibilityRegistry::new(vec![voter.clone()]);
         let mut allowlist = TokenAllowList::new();
@@ -301,25 +391,31 @@ mod tests {
             .build()
             .unwrap();
         let store = FailOnceOnVoteStore {
-            inner: MemoryEventStore::new(),
-            fail_next_vote: true,
+            inner: MemoryInfrastructure::new(),
+            fail_next_vote: Mutex::new(true),
         };
-        let mut ballot_box = AnonymousBallotBox::new(election, store, allowlist).unwrap();
+        let mut ballot_box = AnonymousBallotBox::new(election, store, allowlist)
+            .await
+            .unwrap();
         let vote = Slate::new("ABC").unwrap();
 
         assert_eq!(
-            ballot_box.cast_anonymous_vote(&token, vote.clone()),
+            ballot_box.cast_anonymous_vote(&token, vote.clone()).await,
             Err(VotingFacadeError::Storage(StorageError::AppendFailed(
                 "simulated failure".into()
             )))
         );
         ballot_box
             .cast_anonymous_vote(&token, vote.clone())
+            .await
             .unwrap();
 
-        let tally = ballot_box.close_and_tally().unwrap();
+        let tally = ballot_box.close_and_tally().await.unwrap();
         assert_eq!(tally.outcome, AcademicOutcome::Winner(vote));
-        assert_eq!(tally.store.get_all().unwrap().len(), 4);
+        assert_eq!(
+            tally.store.get_all(&tally.stream_id).await.unwrap().len(),
+            4
+        );
     }
 
     #[test]

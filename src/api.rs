@@ -1,5 +1,3 @@
-use std::{collections::HashMap, sync::Arc};
-
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -7,27 +5,27 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use eng_sft::domain::{
-    factory::{ElectionBoundary, ElectionFactory},
-    manifest::Manifest,
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::{
+    application::{ElectionService, ElectionServiceError},
+    domain::{manifest::Manifest, storage::Infrastructure},
+    error::StorageError,
 };
-use serde::Serialize;
-use tokio::sync::RwLock;
-use uuid::Uuid;
 
-pub type SharedState = Arc<RwLock<HashMap<String, Box<dyn ElectionBoundary + Send + Sync>>>>;
-
-pub fn app_router() -> Router {
-    let state: SharedState = Arc::new(RwLock::new(HashMap::new()));
-
+pub fn app_router<I>(service: ElectionService<I>) -> Router
+where
+    I: Infrastructure<Value, Value> + Clone + Send + Sync + 'static,
+{
     Router::new()
-        .route("/api/elections", post(create_election))
-        .route("/api/elections/{id}/votes", post(cast_vote))
-        .route("/api/elections/{id}/close", post(close_election))
-        .with_state(state)
+        .route("/api/elections", post(create_election::<I>))
+        .route("/api/elections/{id}/votes", post(cast_vote::<I>))
+        .route("/api/elections/{id}/close", post(close_election::<I>))
+        .with_state(service)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct CreateElectionResponse {
     pub id: String,
 }
@@ -37,7 +35,26 @@ struct ErrorResponse {
     error: String,
 }
 
+#[derive(Debug)]
 struct ApiError(StatusCode, String);
+
+impl From<ElectionServiceError> for ApiError {
+    fn from(error: ElectionServiceError) -> Self {
+        let status = match &error {
+            ElectionServiceError::Invalid(_) => StatusCode::BAD_REQUEST,
+            ElectionServiceError::NotFound => StatusCode::NOT_FOUND,
+            ElectionServiceError::Closed => StatusCode::CONFLICT,
+            ElectionServiceError::Infrastructure(StorageError::ElectionNotFound(_)) => {
+                StatusCode::NOT_FOUND
+            }
+            ElectionServiceError::Infrastructure(
+                StorageError::ElectionClosed | StorageError::ConcurrencyConflict { .. },
+            ) => StatusCode::CONFLICT,
+            ElectionServiceError::Infrastructure(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        Self(status, error.to_string())
+    }
+}
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -46,51 +63,111 @@ impl IntoResponse for ApiError {
     }
 }
 
-async fn create_election(
-    State(state): State<SharedState>,
+async fn create_election<I>(
+    State(service): State<ElectionService<I>>,
     Json(manifest): Json<Manifest>,
-) -> Result<impl IntoResponse, ApiError> {
-    let election = ElectionFactory::create(manifest)
-        .map_err(|error| ApiError(StatusCode::BAD_REQUEST, error.to_string()))?;
-
-    let id = Uuid::new_v4().to_string();
-
-    let mut store = state.write().await;
-    store.insert(id.clone(), election);
-
+) -> Result<impl IntoResponse, ApiError>
+where
+    I: Infrastructure<Value, Value> + Clone + Send + Sync + 'static,
+{
+    let id = service
+        .create_election(manifest)
+        .await
+        .map_err(ApiError::from)?;
     Ok((StatusCode::CREATED, Json(CreateElectionResponse { id })))
 }
 
-async fn cast_vote(
+async fn cast_vote<I>(
     Path(id): Path<String>,
-    State(state): State<SharedState>,
-    Json(vote): Json<serde_json::Value>,
-) -> Result<StatusCode, ApiError> {
-    let mut store = state.write().await;
-    let election = store
-        .get_mut(&id)
-        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "Election not found".to_string()))?;
-
-    election
-        .cast_vote(vote)
-        .map_err(|error| ApiError(StatusCode::BAD_REQUEST, error))?;
-
+    State(service): State<ElectionService<I>>,
+    Json(vote): Json<Value>,
+) -> Result<StatusCode, ApiError>
+where
+    I: Infrastructure<Value, Value> + Clone + Send + Sync + 'static,
+{
+    service.cast_vote(&id, vote).await.map_err(ApiError::from)?;
     Ok(StatusCode::OK)
 }
 
-async fn close_election(
+async fn close_election<I>(
     Path(id): Path<String>,
-    State(state): State<SharedState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let election = state
-        .write()
-        .await
-        .remove(&id)
-        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "Election not found".to_string()))?;
+    State(service): State<ElectionService<I>>,
+) -> Result<Json<Value>, ApiError>
+where
+    I: Infrastructure<Value, Value> + Clone + Send + Sync + 'static,
+{
+    let outcome = service.close_election(&id).await.map_err(ApiError::from)?;
+    Ok(Json(outcome))
+}
 
-    let result_json = election
-        .close()
-        .map_err(|error| ApiError(StatusCode::BAD_REQUEST, error))?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::to_bytes, response::IntoResponse};
 
-    Ok(Json(result_json))
+    use crate::infrastructure::MemoryInfrastructure;
+
+    #[tokio::test]
+    async fn elections_use_the_injected_infrastructure() {
+        let service = ElectionService::new(MemoryInfrastructure::<Value, Value>::new());
+        let manifest = serde_json::from_value(serde_json::json!({
+            "type": "academic",
+            "slates": ["A", "B"],
+            "minimum_quorum": 1,
+            "votes": []
+        }))
+        .unwrap();
+
+        let response = create_election(State(service.clone()), Json(manifest))
+            .await
+            .unwrap()
+            .into_response();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let created: CreateElectionResponse = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(
+            cast_vote(
+                Path(created.id.clone()),
+                State(service.clone()),
+                Json(serde_json::json!("A")),
+            )
+            .await
+            .unwrap(),
+            StatusCode::OK
+        );
+
+        let outcome = close_election(Path(created.id), State(service))
+            .await
+            .unwrap();
+        assert_eq!(outcome.0, serde_json::json!({"Winner": "A"}));
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_votes_without_logging_them() {
+        let infrastructure = MemoryInfrastructure::<Value, Value>::new();
+        let service = ElectionService::new(infrastructure.clone());
+        let manifest = serde_json::from_value(serde_json::json!({
+            "type": "academic",
+            "slates": ["A", "B"],
+            "votes": []
+        }))
+        .unwrap();
+        let id = service.create_election(manifest).await.unwrap();
+
+        assert!(
+            service
+                .cast_vote(&id, serde_json::json!("unknown"))
+                .await
+                .is_err()
+        );
+        assert!(
+            infrastructure
+                .get_election(&id)
+                .await
+                .unwrap()
+                .unwrap()
+                .vote_events
+                .is_empty()
+        );
+    }
 }

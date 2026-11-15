@@ -13,10 +13,16 @@ pub enum ElectionError {
 pub enum StorageError {
     #[error("Failed to append event: {0}")]
     AppendFailed(String),
+    #[error("Failed to read events: {0}")]
+    ReadFailed(String),
+    #[error("Election {0} already exists")]
+    ElectionAlreadyExists(String),
+    #[error("Election {0} was not found")]
+    ElectionNotFound(String),
+    #[error("Election is closed")]
+    ElectionClosed,
     #[error("Concurrency conflict: expected sequence {expected}, got {got}")]
     ConcurrencyConflict { expected: u64, got: u64 },
-    //#[error("Failed to read events: {0}")]
-    //ReadFailed(String),
 }
 
 #[derive(Error, Debug, PartialEq, Eq)]
