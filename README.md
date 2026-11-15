@@ -75,16 +75,47 @@ O projeto adota uma abordagem de **Kanban Contínuo** adaptada para equipe solo,
 | **Checklist de Sigilo/Arquitetura** | Garantir a separação entre identidade e conteúdo, e extensibilidade. |
 | **Relatórios de CI** | Registrar resultados de build, testes e análise estática. |
 
-## 5. Executando uma eleição
+## 5. API HTTP
 
-O binário lê as regras e os votos de `src/config.json`, cria a eleição,
-valida e registra cada voto e, por fim, fecha e apura o resultado:
+Inicie o servidor local:
 
 ```sh
 cargo run
 ```
 
-Para usar outra configuração, informe o caminho do arquivo JSON:
+Ele escuta em `http://localhost:3000` e oferece estes endpoints:
+
+| Método | Caminho | Descrição |
+| ----- | ----- | ----- |
+| `POST` | `/api/elections` | Cria uma eleição a partir de um manifesto JSON e retorna seu `id`. |
+| `POST` | `/api/elections/{id}/votes` | Registra um voto JSON para a eleição. |
+| `POST` | `/api/elections/{id}/close` | Fecha a eleição e retorna o resultado JSON. |
+
+O corpo de `POST /api/elections` tem o mesmo formato de manifesto descrito
+abaixo. Cada voto deve ser JSON no formato esperado pelo tipo da eleição; por
+exemplo, uma eleição acadêmica recebe uma string como `"A"`. O endpoint de
+fechamento consome a eleição, portanto ela não poderá receber mais votos nem
+ser fechada novamente. Erros da API retornam um status HTTP apropriado e um
+objeto JSON com a mensagem em `error`.
+
+Exemplo criando e votando em uma eleição acadêmica:
+
+```sh
+curl -X POST http://localhost:3000/api/elections \
+  -H 'content-type: application/json' \
+  -d '{"type":"academic","slates":["A","B"],"minimum_quorum":1,"votes":[]}'
+
+curl -X POST http://localhost:3000/api/elections/ID/votes \
+  -H 'content-type: application/json' \
+  -d '"A"'
+
+curl -X POST http://localhost:3000/api/elections/ID/close
+```
+
+Substitua `ID` pelo valor retornado pela primeira chamada.
+
+Para executar o fluxo anterior de linha de comando e apurar uma configuração
+localmente sem iniciar o servidor, passe o caminho do manifesto:
 
 ```sh
 cargo run -- caminho/para/config.json
