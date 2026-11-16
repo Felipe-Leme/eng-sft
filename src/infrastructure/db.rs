@@ -22,6 +22,13 @@ pub struct SqliteInfrastructure {
     pool: DbPool,
 }
 
+impl SqliteInfrastructure {
+    #[cfg(test)]
+    pub(crate) async fn close(&self) {
+        self.pool.close().await;
+    }
+}
+
 pub async fn init_db(database_url: &str) -> Result<SqliteInfrastructure, sqlx::Error> {
     let options = SqliteConnectOptions::from_str(database_url)?
         .create_if_missing(true)
