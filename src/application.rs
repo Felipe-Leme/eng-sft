@@ -160,9 +160,130 @@ mod tests {
     use super::*;
 
     use crate::{
-        domain::storage::Infrastructure,
+        domain::{
+            crypto::HashedEventRecord,
+            storage::{ElectionEvent, Infrastructure},
+        },
         infrastructure::db::{SqliteInfrastructure, init_db},
     };
+
+    #[test]
+    fn rejects_tampered_history_and_invalid_persisted_elections() {
+        let valid_event = HashedEventRecord::new(
+            1,
+            "2026-01-01T00:00:01Z".to_owned(),
+            GENESIS_HASH.to_owned(),
+            ElectionEvent::<Value, Value>::VoteCast(serde_json::json!("A")),
+        )
+        .unwrap();
+        let mut tampered_event = valid_event.clone();
+        tampered_event.current_hash.push('0');
+        assert!(matches!(
+            verify_events(&[tampered_event]),
+            Err(ElectionServiceError::Infrastructure(
+                StorageError::AppendFailed(_)
+            ))
+        ));
+
+        let invalid_manifest = PersistedElection {
+            manifest: "not JSON".to_owned(),
+            is_closed: false,
+            outcome: None,
+            vote_events: Vec::new(),
+        };
+        assert!(matches!(
+            restore_election(&invalid_manifest),
+            Err(ElectionServiceError::Infrastructure(
+                StorageError::ReadFailed(_)
+            ))
+        ));
+
+        let unsupported_event = HashedEventRecord::new(
+            1,
+            "2026-01-01T00:00:01Z".to_owned(),
+            GENESIS_HASH.to_owned(),
+            ElectionEvent::<Value, Value>::ElectionCreated,
+        )
+        .unwrap();
+        let unsupported_history = PersistedElection {
+            manifest: r#"{"type":"academic","slates":["A"],"votes":[]}"#.to_owned(),
+            is_closed: false,
+            outcome: None,
+            vote_events: vec![unsupported_event],
+        };
+        assert!(matches!(
+            restore_election(&unsupported_history),
+            Err(ElectionServiceError::Infrastructure(
+                StorageError::ReadFailed(_)
+            ))
+        ));
+
+        let invalid_vote = HashedEventRecord::new(
+            1,
+            "2026-01-01T00:00:01Z".to_owned(),
+            GENESIS_HASH.to_owned(),
+            ElectionEvent::<Value, Value>::VoteCast(serde_json::json!("unknown")),
+        )
+        .unwrap();
+        let invalid_history = PersistedElection {
+            manifest: r#"{"type":"academic","slates":["A"],"votes":[]}"#.to_owned(),
+            is_closed: false,
+            outcome: None,
+            vote_events: vec![invalid_vote],
+        };
+        assert!(matches!(
+            restore_election(&invalid_history),
+            Err(ElectionServiceError::Infrastructure(
+                StorageError::ReadFailed(_)
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn service_rejects_invalid_missing_and_closed_elections() {
+        let infrastructure = crate::infrastructure::MemoryInfrastructure::<Value, Value>::new();
+        let service = ElectionService::new(infrastructure);
+        let invalid_manifest = serde_json::from_value(serde_json::json!({
+            "type": "academic",
+            "slates": [],
+            "votes": []
+        }))
+        .unwrap();
+        assert!(matches!(
+            service.create_election(invalid_manifest).await,
+            Err(ElectionServiceError::Invalid(_))
+        ));
+
+        let manifest = serde_json::from_value(serde_json::json!({
+            "type": "academic",
+            "slates": ["A"],
+            "votes": []
+        }))
+        .unwrap();
+        let id = service.create_election(manifest).await.unwrap();
+        assert!(matches!(
+            service.cast_vote("missing", serde_json::json!("A")).await,
+            Err(ElectionServiceError::NotFound)
+        ));
+        assert!(matches!(
+            service.cast_vote(&id, serde_json::json!("unknown")).await,
+            Err(ElectionServiceError::Invalid(_))
+        ));
+
+        service
+            .cast_vote(&id, serde_json::json!("A"))
+            .await
+            .unwrap();
+        service.close_election(&id).await.unwrap();
+        assert!(matches!(
+            service.cast_vote(&id, serde_json::json!("A")).await,
+            Err(ElectionServiceError::Closed)
+        ));
+        assert!(matches!(
+            service.close_election(&id).await,
+            Err(ElectionServiceError::Closed)
+        ));
+    }
 
     #[tokio::test]
     async fn election_service_uses_sqlite_through_the_shared_infrastructure() {

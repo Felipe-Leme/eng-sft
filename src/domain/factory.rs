@@ -229,4 +229,18 @@ mod tests {
             Err(ElectionFactoryError::Json(_))
         ));
     }
+
+    #[test]
+    fn academic_manifest_defaults_to_one_vote_quorum() {
+        let manifest =
+            ElectionFactory::parse_manifest(r#"{"type":"academic","slates":["A"],"votes":[]}"#)
+                .unwrap();
+        assert!(matches!(
+            manifest,
+            Manifest::Typed(TypedManifest::Academic {
+                minimum_quorum: 1,
+                ..
+            })
+        ));
+    }
 }

@@ -197,6 +197,7 @@ mod tests {
 
         let a = Slate::new("A").unwrap();
         let b = Slate::new("B").unwrap();
+        assert_eq!(a.to_string(), "A");
 
         election.cast_vote(a.clone()).unwrap();
         election.cast_vote(b.clone()).unwrap();
@@ -227,5 +228,18 @@ mod tests {
 
         let result = election.close().compute_result().unwrap();
         assert_eq!(result, AcademicOutcome::Winner(overworld));
+    }
+
+    #[test]
+    fn empty_academic_election_cannot_be_tallied() {
+        let election = AcademicElectionBuilder::new()
+            .add_slate("A")
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            election.close().compute_result(),
+            Err(ElectionError::TallyFailed("No votes cast".into()))
+        );
     }
 }

@@ -209,7 +209,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::storage::ElectionEvent;
+    use crate::domain::{
+        crypto::{GENESIS_HASH, HashedEventRecord},
+        storage::ElectionEvent,
+    };
+
+    fn vote_event(sequence: u64, previous_hash: &str) -> HashedEventRecord<Value, Value> {
+        HashedEventRecord::new(
+            sequence,
+            format!("2026-01-01T00:00:{sequence:02}Z"),
+            previous_hash.to_owned(),
+            ElectionEvent::VoteCast(serde_json::json!("A")),
+        )
+        .unwrap()
+    }
 
     #[tokio::test]
     async fn memory_infrastructure_enforces_sequential_event_appends() {
@@ -257,5 +270,142 @@ mod tests {
         assert_eq!(store.get_since("first", 2).await.unwrap().len(), 2);
         assert_eq!(store.get_all("second").await.unwrap().len(), 1);
         assert_eq!(store.get_all("missing").await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn election_storage_validates_event_chains_and_closed_state() {
+        let store = MemoryInfrastructure::<Value, Value>::new();
+        let clone = store.clone();
+        assert_eq!(store.get_election("missing").await.unwrap(), None);
+        assert_eq!(
+            store
+                .close_election("missing", 0, serde_json::Value::Null)
+                .await,
+            Err(StorageError::ElectionNotFound("missing".to_owned()))
+        );
+        assert_eq!(
+            store
+                .append_vote_event("missing", vote_event(1, GENESIS_HASH))
+                .await,
+            Err(StorageError::ElectionNotFound("missing".to_owned()))
+        );
+
+        store
+            .create_election("election".to_owned(), "{}".to_owned())
+            .await
+            .unwrap();
+        assert_eq!(
+            clone
+                .create_election("election".to_owned(), "{}".to_owned())
+                .await,
+            Err(StorageError::ElectionAlreadyExists("election".to_owned()))
+        );
+
+        let mut invalid_hash = vote_event(1, GENESIS_HASH);
+        invalid_hash.current_hash.push('0');
+        assert_eq!(
+            store.append_vote_event("election", invalid_hash).await,
+            Err(StorageError::AppendFailed(
+                "Vote event hash is invalid".to_owned()
+            ))
+        );
+        assert_eq!(
+            store
+                .append_vote_event("election", vote_event(2, GENESIS_HASH))
+                .await,
+            Err(StorageError::ConcurrencyConflict {
+                expected: 1,
+                got: 2,
+            })
+        );
+
+        let incorrect_previous = "f".repeat(64);
+        assert_eq!(
+            store
+                .append_vote_event("election", vote_event(1, &incorrect_previous))
+                .await,
+            Err(StorageError::AppendFailed(
+                "Vote event does not extend the current hash chain".to_owned()
+            ))
+        );
+
+        let event = vote_event(1, GENESIS_HASH);
+        let current_hash = event.current_hash.clone();
+        store.append_vote_event("election", event).await.unwrap();
+        assert_eq!(
+            clone
+                .close_election("election", 0, serde_json::Value::Null)
+                .await,
+            Err(StorageError::ConcurrencyConflict {
+                expected: 0,
+                got: 1,
+            })
+        );
+        clone
+            .close_election("election", 1, serde_json::json!({"Winner": "A"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .close_election("election", 1, serde_json::Value::Null)
+                .await,
+            Err(StorageError::ElectionClosed)
+        );
+        assert_eq!(
+            store
+                .append_vote_event("election", vote_event(2, &current_hash))
+                .await,
+            Err(StorageError::ElectionClosed)
+        );
+
+        let persisted = store.get_election("election").await.unwrap().unwrap();
+        assert!(persisted.is_closed);
+        assert_eq!(persisted.vote_events.len(), 1);
+        assert_eq!(persisted.outcome, Some(serde_json::json!({"Winner": "A"})));
+    }
+
+    #[tokio::test]
+    async fn memory_storage_rejects_sequence_overflow() {
+        let store = MemoryInfrastructure::<Value, Value>::new();
+        store
+            .create_election("election".to_owned(), "{}".to_owned())
+            .await
+            .unwrap();
+        {
+            let mut state = store.state.lock().await;
+            state
+                .elections
+                .get_mut("election")
+                .unwrap()
+                .vote_events
+                .push(vote_event(u64::MAX, GENESIS_HASH));
+            state.event_streams.insert(
+                "stream".to_owned(),
+                vec![EventRecord::new(
+                    u64::MAX,
+                    ElectionEvent::<Value, Value>::ElectionCreated,
+                )],
+            );
+        }
+
+        assert_eq!(
+            store
+                .append_vote_event("election", vote_event(u64::MAX, GENESIS_HASH))
+                .await,
+            Err(StorageError::AppendFailed(
+                "Vote event sequence overflow".to_owned()
+            ))
+        );
+        assert_eq!(
+            store
+                .append(
+                    "stream",
+                    EventRecord::new(u64::MAX, ElectionEvent::<Value, Value>::ElectionCreated,),
+                )
+                .await,
+            Err(StorageError::AppendFailed(
+                "Event sequence overflow".to_owned()
+            ))
+        );
     }
 }

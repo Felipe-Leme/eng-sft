@@ -103,9 +103,135 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{body::to_bytes, response::IntoResponse};
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+        response::IntoResponse,
+    };
+    use tower::ServiceExt;
 
     use crate::infrastructure::MemoryInfrastructure;
+
+    fn json_request(uri: &str, body: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_owned()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn maps_service_errors_to_statuses_and_json_errors() {
+        let errors = [
+            (
+                ElectionServiceError::Invalid("invalid".into()),
+                StatusCode::BAD_REQUEST,
+            ),
+            (ElectionServiceError::NotFound, StatusCode::NOT_FOUND),
+            (ElectionServiceError::Closed, StatusCode::CONFLICT),
+            (
+                StorageError::ElectionNotFound("election".into()).into(),
+                StatusCode::NOT_FOUND,
+            ),
+            (StorageError::ElectionClosed.into(), StatusCode::CONFLICT),
+            (
+                StorageError::ConcurrencyConflict {
+                    expected: 1,
+                    got: 2,
+                }
+                .into(),
+                StatusCode::CONFLICT,
+            ),
+            (
+                StorageError::AppendFailed("write".into()).into(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                StorageError::ReadFailed("read".into()).into(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+
+        for (error, expected_status) in errors {
+            let response = ApiError::from(error).into_response();
+            assert_eq!(response.status(), expected_status);
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            assert!(serde_json::from_slice::<Value>(&body).unwrap()["error"].is_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn vote_route_maps_json_and_election_errors_to_http_statuses() {
+        let service = ElectionService::new(MemoryInfrastructure::<Value, Value>::new());
+        let app = app_router(service);
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "/api/elections",
+                r#"{"type":"academic","slates":["A","B"],"votes":[]}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let created: CreateElectionResponse = serde_json::from_slice(&body).unwrap();
+        let vote_uri = format!("/api/elections/{}/votes", created.id);
+
+        assert_eq!(
+            app.clone()
+                .oneshot(json_request(&vote_uri, "{"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(json_request(&vote_uri, r#""unknown""#))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(json_request("/api/elections/missing/votes", r#""A""#,))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(json_request(&vote_uri, r#""A""#))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/api/elections/{}/close", created.id))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            app.oneshot(json_request(&vote_uri, r#""A""#))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
+        );
+    }
 
     #[tokio::test]
     async fn elections_use_the_injected_infrastructure() {
