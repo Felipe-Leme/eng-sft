@@ -1,11 +1,6 @@
 use crate::{domain::strategy::TallyStrategy, error::ElectionError};
 use std::marker::PhantomData;
 
-pub(crate) enum VoteCommitError<E> {
-    Election(ElectionError),
-    Commit(E),
-}
-
 pub struct Open;
 pub struct Closed;
 
