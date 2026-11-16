@@ -97,3 +97,38 @@ impl From<Percentage> for Score {
         Self(value.0)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use rust_decimal::dec;
+
+    use super::*;
+
+    #[test]
+    fn validates_score_and_percentage_boundaries() {
+        assert!(Score::new(dec!(0.0)).is_ok());
+        assert!(Score::new(dec!(-0.01)).is_err());
+
+        assert!(Percentage::new(dec!(0.0)).is_ok());
+        assert!(Percentage::new(dec!(100.0)).is_ok());
+        assert!(Percentage::new(dec!(-0.01)).is_err());
+        assert!(Percentage::new(dec!(100.01)).is_err());
+
+        let score = Score::try_from(dec!(1.25)).unwrap();
+        assert_eq!(score.inner(), dec!(1.25));
+        assert_eq!((score + Score::ONE).inner(), dec!(2.25));
+
+        let mut accumulated = score;
+        accumulated += Score::ONE;
+        assert_eq!(accumulated.inner(), dec!(2.25));
+        let score_decimal: Decimal = Score::ONE.into();
+        assert_eq!(score_decimal, Decimal::ONE);
+
+        let percentage = Percentage::try_from(dec!(25)).unwrap();
+        assert_eq!(percentage.inner(), dec!(25));
+        let percentage_decimal: Decimal = percentage.into();
+        assert_eq!(percentage_decimal, dec!(25));
+        let percentage_score: Score = percentage.into();
+        assert_eq!(percentage_score.inner(), dec!(25));
+    }
+}

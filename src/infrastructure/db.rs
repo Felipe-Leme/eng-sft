@@ -375,6 +375,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::crypto::{GENESIS_HASH, HashedEventRecord};
+
+    fn vote_event(sequence: u64, previous_hash: &str) -> HashedEventRecord<Value, Value> {
+        HashedEventRecord::new(
+            sequence,
+            format!("2026-01-01T00:00:{sequence:02}Z"),
+            previous_hash.to_owned(),
+            ElectionEvent::VoteCast(serde_json::json!("A")),
+        )
+        .unwrap()
+    }
 
     #[tokio::test]
     async fn initializes_a_database_with_constrained_persistence_schema() {
@@ -430,5 +441,143 @@ mod tests {
             .unwrap(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn sqlite_election_storage_enforces_event_integrity_and_lifecycle() {
+        let infrastructure = init_db("sqlite::memory:").await.unwrap();
+        let store: &dyn Infrastructure<Value, Value> = &infrastructure;
+
+        assert_eq!(store.get_election("missing").await.unwrap(), None);
+        assert_eq!(
+            store
+                .append_vote_event("missing", vote_event(1, GENESIS_HASH))
+                .await,
+            Err(StorageError::ElectionNotFound("missing".to_owned()))
+        );
+        assert_eq!(
+            store
+                .close_election("missing", 0, serde_json::Value::Null)
+                .await,
+            Err(StorageError::ElectionNotFound("missing".to_owned()))
+        );
+
+        store
+            .create_election(
+                "election".to_owned(),
+                r#"{"type":"academic","slates":["A"],"votes":[]}"#.to_owned(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            store
+                .create_election(
+                    "election".to_owned(),
+                    r#"{"type":"academic","slates":["A"],"votes":[]}"#.to_owned(),
+                )
+                .await,
+            Err(StorageError::AppendFailed(_))
+        ));
+
+        let unsupported_event = HashedEventRecord::new(
+            1,
+            "2026-01-01T00:00:01Z".to_owned(),
+            GENESIS_HASH.to_owned(),
+            ElectionEvent::<Value, Value>::ElectionCreated,
+        )
+        .unwrap();
+        assert!(matches!(
+            store.append_vote_event("election", unsupported_event).await,
+            Err(StorageError::AppendFailed(_))
+        ));
+
+        let mut invalid_hash = vote_event(1, GENESIS_HASH);
+        invalid_hash.current_hash.push('0');
+        assert!(matches!(
+            store.append_vote_event("election", invalid_hash).await,
+            Err(StorageError::AppendFailed(_))
+        ));
+        assert_eq!(
+            store
+                .append_vote_event("election", vote_event(2, GENESIS_HASH))
+                .await,
+            Err(StorageError::ConcurrencyConflict {
+                expected: 1,
+                got: 2,
+            })
+        );
+        let incorrect_previous = "f".repeat(64);
+        assert!(matches!(
+            store
+                .append_vote_event("election", vote_event(1, &incorrect_previous))
+                .await,
+            Err(StorageError::AppendFailed(_))
+        ));
+
+        let event = vote_event(1, GENESIS_HASH);
+        let current_hash = event.current_hash.clone();
+        store.append_vote_event("election", event).await.unwrap();
+        let persisted = store.get_election("election").await.unwrap().unwrap();
+        assert_eq!(persisted.vote_events.len(), 1);
+        assert_eq!(persisted.vote_events[0].current_hash, current_hash);
+
+        assert!(matches!(
+            store
+                .close_election("election", u64::MAX, serde_json::Value::Null)
+                .await,
+            Err(StorageError::AppendFailed(_))
+        ));
+        assert_eq!(
+            store
+                .close_election("election", 0, serde_json::Value::Null)
+                .await,
+            Err(StorageError::ConcurrencyConflict {
+                expected: 0,
+                got: 1,
+            })
+        );
+        store
+            .close_election("election", 1, serde_json::json!({"Winner": "A"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .close_election("election", 1, serde_json::Value::Null)
+                .await,
+            Err(StorageError::ElectionClosed)
+        );
+        assert_eq!(
+            store
+                .append_vote_event("election", vote_event(2, &current_hash))
+                .await,
+            Err(StorageError::ElectionClosed)
+        );
+        assert!(
+            store
+                .get_election("election")
+                .await
+                .unwrap()
+                .unwrap()
+                .is_closed
+        );
+
+        for sequence in 1..=2 {
+            store
+                .append(
+                    "stream",
+                    EventRecord::<Value, Value>::new(
+                        sequence,
+                        ElectionEvent::VoteCast(serde_json::json!(sequence)),
+                    ),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(store.get_all("stream").await.unwrap().len(), 2);
+        assert_eq!(store.get_since("stream", 2).await.unwrap().len(), 1);
+        assert!(matches!(
+            store.get_since("stream", u64::MAX).await,
+            Err(StorageError::ReadFailed(_))
+        ));
     }
 }

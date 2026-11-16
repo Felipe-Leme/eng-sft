@@ -226,4 +226,16 @@ mod tests {
                 .verify(&single_leaf.root())
         );
     }
+
+    #[test]
+    fn proofs_accept_uppercase_hexadecimal_hashes() {
+        let tree = MerkleTree::new(&["Vote: A", "Vote: B"]);
+        let mut proof = tree.generate_proof(0).unwrap();
+        proof.leaf_hash.make_ascii_uppercase();
+        for step in &mut proof.steps {
+            step.hash.make_ascii_uppercase();
+        }
+
+        assert!(proof.verify(&tree.root().to_ascii_uppercase()));
+    }
 }

@@ -556,4 +556,64 @@ mod tests {
         let config: CustomRuleSet = serde_json::from_value(json).unwrap();
         assert_eq!(config.winner_count, 1);
     }
+
+    #[test]
+    fn ranked_borda_validates_ballots_and_returns_winners_at_the_cutoff() {
+        let strategy = CustomRuleStrategy::new(rules(ScoringRule::RankedBorda)).unwrap();
+        assert!(strategy.validate(&vote(&[])).is_err());
+        assert!(strategy.validate(&vote(&["A", "B", "C", "A"])).is_err());
+        assert!(strategy.validate(&vote(&["A", "B", "C"])).is_ok());
+
+        assert_eq!(
+            tally(rules(ScoringRule::RankedBorda), &[vote(&["A", "B", "C"])]),
+            CustomOutcome::Winners(vec!["A".into()])
+        );
+
+        let mut config = rules(ScoringRule::Plurality);
+        config.winner_count = config.options.len();
+        config.tie_breaker = TieBreakerRule::AllowTie;
+        assert_eq!(
+            tally(config, &[vote(&["A"]), vote(&["B"]), vote(&["C"])]),
+            CustomOutcome::Winners(vec!["A".into(), "B".into(), "C".into()])
+        );
+    }
+
+    #[test]
+    fn reports_weight_and_score_overflow() {
+        let mut config = rules(ScoringRule::Plurality);
+        config.weighting = WeightingRule::Weighted;
+        config.quorum = QuorumRule::MinTotalWeight { min: Decimal::ZERO };
+        let strategy = CustomRuleStrategy::new(config.clone()).unwrap();
+        let maximum_weight_vote = CustomVote {
+            choices: vec!["A".into()],
+            weight: Decimal::MAX,
+        };
+        assert!(matches!(
+            strategy.tally(&[maximum_weight_vote.clone(), maximum_weight_vote]),
+            Err(ElectionError::TallyFailed(message)) if message == "Total vote weight overflowed"
+        ));
+
+        config.quorum = QuorumRule::None;
+        let strategy = CustomRuleStrategy::new(config).unwrap();
+        let maximum_weight_vote = CustomVote {
+            choices: vec!["A".into()],
+            weight: Decimal::MAX,
+        };
+        assert!(matches!(
+            strategy.tally(&[maximum_weight_vote.clone(), maximum_weight_vote]),
+            Err(ElectionError::TallyFailed(message)) if message == "Option score overflowed"
+        ));
+
+        let mut config = rules(ScoringRule::RankedBorda);
+        config.weighting = WeightingRule::Weighted;
+        let strategy = CustomRuleStrategy::new(config).unwrap();
+        let maximum_weight_vote = CustomVote {
+            choices: vec!["A".into()],
+            weight: Decimal::MAX,
+        };
+        assert!(matches!(
+            strategy.tally(&[maximum_weight_vote]),
+            Err(ElectionError::TallyFailed(message)) if message == "Weighted Borda score overflowed"
+        ));
+    }
 }

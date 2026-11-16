@@ -446,4 +446,14 @@ mod tests {
         );
         assert!(allowlist.consume(&token));
     }
+
+    #[test]
+    fn event_sequence_increment_rejects_overflow() {
+        assert_eq!(
+            next_sequence(u64::MAX),
+            Err(VotingFacadeError::Storage(StorageError::AppendFailed(
+                "Event sequence overflow".into()
+            )))
+        );
+    }
 }

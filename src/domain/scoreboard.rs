@@ -53,11 +53,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sorts_equal_scores_by_option() {
+    fn handles_empty_single_and_tied_winners() {
         let mut scoreboard = Scoreboard::new();
+        assert_eq!(scoreboard.get_winners(), (Score::ZERO, Vec::<&str>::new()));
+
         let score = Score::new(dec!(1)).unwrap();
-        scoreboard.add_score("B", score);
         scoreboard.add_score("A", score);
+        assert_eq!(scoreboard.get_winners(), (score, vec!["A"]));
+
+        scoreboard.add_score("B", score);
 
         assert_eq!(scoreboard.get_winners().1, vec!["A", "B"]);
         assert_eq!(

@@ -193,4 +193,52 @@ mod tests {
         );
         assert_eq!(result.total_spent, dec!(70_000.0));
     }
+
+    #[test]
+    fn validates_budget_rules_and_respects_rank_scores() {
+        assert!(matches!(
+            BudgetElectionBuilder::new()
+                .with_ceiling(dec!(-1))
+                .add_project("A", dec!(1))
+                .build(),
+            Err(BudgetElectionError::NegativeCeiling)
+        ));
+        assert!(matches!(
+            BudgetElectionBuilder::new().build(),
+            Err(BudgetElectionError::NoProjectsRegistered)
+        ));
+        assert!(matches!(
+            BudgetElectionBuilder::new()
+                .add_project("  ", dec!(1))
+                .with_ceiling(dec!(1))
+                .build(),
+            Err(BudgetElectionError::InvalidProjectName(_))
+        ));
+
+        let mut election = BudgetElectionBuilder::new()
+            .add_project("A", dec!(1))
+            .add_project("B", dec!(1))
+            .with_ceiling(dec!(1))
+            .build()
+            .unwrap();
+        assert!(matches!(
+            election.cast_vote(vec!["Unknown".into()]),
+            Err(ElectionError::InvalidVote(_))
+        ));
+        assert!(matches!(
+            election.cast_vote(vec!["A".into(), "A".into()]),
+            Err(ElectionError::InvalidVote(_))
+        ));
+
+        election.cast_vote(vec!["B".into(), "A".into()]).unwrap();
+        let outcome = election.close().compute_result().unwrap();
+        assert_eq!(
+            outcome.selected_projects,
+            vec![Project {
+                name: "B".into(),
+                cost: dec!(1)
+            }]
+        );
+        assert_eq!(outcome.total_spent, dec!(1));
+    }
 }
