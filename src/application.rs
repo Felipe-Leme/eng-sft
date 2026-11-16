@@ -319,6 +319,7 @@ mod tests {
             })
         );
         drop(service);
+        infrastructure.close().await;
         drop(infrastructure);
 
         let infrastructure = init_db(&database_url).await.unwrap();
@@ -334,6 +335,7 @@ mod tests {
         assert_eq!(election.outcome, Some(outcome));
         assert_eq!(election.vote_events.len(), 1);
         drop(service);
+        infrastructure.close().await;
         drop(infrastructure);
         std::fs::remove_file(database_path).unwrap();
     }
