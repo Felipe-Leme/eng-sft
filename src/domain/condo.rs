@@ -207,4 +207,65 @@ mod tests {
         assert_eq!(serde_json::from_str::<CondoVote>(&json).unwrap(), vote);
         assert!(serde_json::from_str::<CondoVote>(r#"{"choice":"A","fraction":"1.01"}"#).is_err());
     }
+
+    #[test]
+    fn handles_invalid_votes_quorum_and_ties() {
+        assert!(matches!(
+            CondoElectionBuilder::new().build(),
+            Err(CondoElectionError::NoOptionsRegistered)
+        ));
+        assert!(matches!(
+            CondoElectionBuilder::new().add_option(" ").build(),
+            Err(CondoElectionError::InvalidOptionName(_))
+        ));
+
+        let mut below_quorum = CondoElectionBuilder::new()
+            .add_option("A")
+            .add_option("B")
+            .with_quorum(Percentage::try_from(dec!(80)).unwrap())
+            .build()
+            .unwrap();
+        assert!(matches!(
+            below_quorum.cast_vote(CondoVote {
+                choice: "Unknown".into(),
+                fraction: Percentage::ONE_HUNDRED,
+            }),
+            Err(ElectionError::InvalidVote(_))
+        ));
+        assert!(matches!(
+            below_quorum.cast_vote(CondoVote {
+                choice: "A".into(),
+                fraction: Percentage::ZERO,
+            }),
+            Err(ElectionError::InvalidVote(_))
+        ));
+        below_quorum
+            .cast_vote(CondoVote {
+                choice: "A".into(),
+                fraction: Percentage::try_from(dec!(40)).unwrap(),
+            })
+            .unwrap();
+        assert_eq!(
+            below_quorum.close().compute_result().unwrap(),
+            CondoOutcome::QuorumNotMet
+        );
+
+        let mut tied = CondoElectionBuilder::new()
+            .add_option("A")
+            .add_option("B")
+            .with_quorum(Percentage::try_from(dec!(70)).unwrap())
+            .build()
+            .unwrap();
+        for choice in ["A", "B"] {
+            tied.cast_vote(CondoVote {
+                choice: choice.into(),
+                fraction: Percentage::try_from(dec!(40)).unwrap(),
+            })
+            .unwrap();
+        }
+        assert_eq!(
+            tied.close().compute_result().unwrap(),
+            CondoOutcome::Tie(vec!["A".into(), "B".into()])
+        );
+    }
 }
