@@ -72,6 +72,3 @@ jobs:
 
           - name: Run tests (${{matrix.target}})
             run: cargo test --workspace --target ${{ matrix.target }} --profile ${{ matrix.BUILD_PROFILE }}
-
-          - name: Build release binaries (${{ matrix.target }})
-            run: cargo build --workspace --bin ${{ matrix.BINARY_NAME }} --target ${{ matrix.target }} --profile ${{ matrix.BUILD_PROFILE }}
