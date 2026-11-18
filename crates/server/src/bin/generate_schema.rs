@@ -1,7 +1,7 @@
 use std::{env, error::Error, fs, path::PathBuf};
 
-use eng_sft::domain::manifest::Manifest;
 use schemars::schema_for;
+use server::domain::manifest::Manifest;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);

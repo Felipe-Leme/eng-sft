@@ -1,18 +1,23 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use serde_json::Value;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 use crate::{
     domain::{
         crypto::HashedEventRecord,
-        storage::{EventRecord, Infrastructure, PersistedElection},
+        storage::{EventRecord, Infrastructure, PersistedElection, PersistedElectionSummary},
     },
     error::StorageError,
 };
 
 struct MemoryState<V, O> {
     elections: HashMap<String, PersistedElection>,
+    voters: HashSet<(String, Uuid)>,
     event_streams: HashMap<String, Vec<EventRecord<V, O>>>,
 }
 
@@ -33,6 +38,7 @@ impl<V, O> Default for MemoryInfrastructure<V, O> {
         Self {
             state: Arc::new(Mutex::new(MemoryState {
                 elections: HashMap::new(),
+                voters: HashSet::new(),
                 event_streams: HashMap::new(),
             })),
         }
@@ -51,14 +57,27 @@ where
     V: Clone + Send + Sync + 'static,
     O: Clone + Send + Sync + 'static,
 {
-    async fn create_election(&self, id: String, manifest: String) -> Result<(), StorageError> {
+    async fn create_election(
+        &self,
+        id: String,
+        name: String,
+        manifest: String,
+    ) -> Result<(), StorageError> {
         let mut state = self.state.lock().await;
         if state.elections.contains_key(&id) {
             return Err(StorageError::ElectionAlreadyExists(id));
         }
+        if state
+            .elections
+            .values()
+            .any(|election| election.name.eq_ignore_ascii_case(&name))
+        {
+            return Err(StorageError::DuplicateElectionName);
+        }
         state.elections.insert(
             id,
             PersistedElection {
+                name,
                 manifest,
                 is_closed: false,
                 outcome: None,
@@ -72,12 +91,33 @@ where
         Ok(self.state.lock().await.elections.get(id).cloned())
     }
 
+    async fn list_elections(&self) -> Result<Vec<PersistedElectionSummary>, StorageError> {
+        let state = self.state.lock().await;
+        let mut elections: Vec<_> = state
+            .elections
+            .iter()
+            .map(|(id, election)| PersistedElectionSummary {
+                id: id.clone(),
+                name: election.name.clone(),
+                manifest: election.manifest.clone(),
+                is_closed: election.is_closed,
+                outcome: election.outcome.clone(),
+            })
+            .collect();
+        elections.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(elections)
+    }
+
     async fn append_vote_event(
         &self,
         id: &str,
+        voter_id: Uuid,
         event: HashedEventRecord<Value, Value>,
     ) -> Result<(), StorageError> {
         let mut state = self.state.lock().await;
+        if state.voters.contains(&(id.to_owned(), voter_id)) {
+            return Err(StorageError::VoterAlreadyVoted);
+        }
         let election = state
             .elections
             .get_mut(id)
@@ -118,6 +158,7 @@ where
         }
 
         election.vote_events.push(event);
+        state.voters.insert((id.to_owned(), voter_id));
         Ok(())
     }
 
@@ -224,6 +265,10 @@ mod tests {
         .unwrap()
     }
 
+    fn voter_id() -> Uuid {
+        Uuid::from_u128(1)
+    }
+
     #[tokio::test]
     async fn memory_infrastructure_enforces_sequential_event_appends() {
         let store = MemoryInfrastructure::<String, String>::new();
@@ -285,33 +330,49 @@ mod tests {
         );
         assert_eq!(
             store
-                .append_vote_event("missing", vote_event(1, GENESIS_HASH))
+                .append_vote_event("missing", voter_id(), vote_event(1, GENESIS_HASH))
                 .await,
             Err(StorageError::ElectionNotFound("missing".to_owned()))
         );
 
         store
-            .create_election("election".to_owned(), "{}".to_owned())
+            .create_election(
+                "election".to_owned(),
+                "Election".to_owned(),
+                "{}".to_owned(),
+            )
             .await
             .unwrap();
         assert_eq!(
             clone
-                .create_election("election".to_owned(), "{}".to_owned())
+                .create_election("election".to_owned(), "Another".to_owned(), "{}".to_owned())
                 .await,
             Err(StorageError::ElectionAlreadyExists("election".to_owned()))
+        );
+        assert_eq!(
+            clone
+                .create_election(
+                    "another-id".to_owned(),
+                    "eLECTION".to_owned(),
+                    "{}".to_owned()
+                )
+                .await,
+            Err(StorageError::DuplicateElectionName)
         );
 
         let mut invalid_hash = vote_event(1, GENESIS_HASH);
         invalid_hash.current_hash.push('0');
         assert_eq!(
-            store.append_vote_event("election", invalid_hash).await,
+            store
+                .append_vote_event("election", voter_id(), invalid_hash)
+                .await,
             Err(StorageError::AppendFailed(
                 "Vote event hash is invalid".to_owned()
             ))
         );
         assert_eq!(
             store
-                .append_vote_event("election", vote_event(2, GENESIS_HASH))
+                .append_vote_event("election", voter_id(), vote_event(2, GENESIS_HASH))
                 .await,
             Err(StorageError::ConcurrencyConflict {
                 expected: 1,
@@ -322,7 +383,7 @@ mod tests {
         let incorrect_previous = "f".repeat(64);
         assert_eq!(
             store
-                .append_vote_event("election", vote_event(1, &incorrect_previous))
+                .append_vote_event("election", voter_id(), vote_event(1, &incorrect_previous))
                 .await,
             Err(StorageError::AppendFailed(
                 "Vote event does not extend the current hash chain".to_owned()
@@ -331,7 +392,16 @@ mod tests {
 
         let event = vote_event(1, GENESIS_HASH);
         let current_hash = event.current_hash.clone();
-        store.append_vote_event("election", event).await.unwrap();
+        store
+            .append_vote_event("election", voter_id(), event)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .append_vote_event("election", voter_id(), vote_event(2, &current_hash),)
+                .await,
+            Err(StorageError::VoterAlreadyVoted)
+        );
         assert_eq!(
             clone
                 .close_election("election", 0, serde_json::Value::Null)
@@ -353,7 +423,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .append_vote_event("election", vote_event(2, &current_hash))
+                .append_vote_event("election", Uuid::from_u128(2), vote_event(2, &current_hash))
                 .await,
             Err(StorageError::ElectionClosed)
         );
@@ -368,7 +438,11 @@ mod tests {
     async fn memory_storage_rejects_sequence_overflow() {
         let store = MemoryInfrastructure::<Value, Value>::new();
         store
-            .create_election("election".to_owned(), "{}".to_owned())
+            .create_election(
+                "election".to_owned(),
+                "Election".to_owned(),
+                "{}".to_owned(),
+            )
             .await
             .unwrap();
         {
@@ -390,7 +464,7 @@ mod tests {
 
         assert_eq!(
             store
-                .append_vote_event("election", vote_event(u64::MAX, GENESIS_HASH))
+                .append_vote_event("election", voter_id(), vote_event(u64::MAX, GENESIS_HASH))
                 .await,
             Err(StorageError::AppendFailed(
                 "Vote event sequence overflow".to_owned()

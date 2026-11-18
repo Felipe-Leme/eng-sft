@@ -1,6 +1,9 @@
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+};
 
 use crate::{
     domain::{
@@ -22,6 +25,20 @@ pub struct Project {
 pub struct BudgetOutcome {
     pub selected_projects: Vec<Project>,
     pub total_spent: Decimal,
+}
+
+impl Display for BudgetOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(formatter, "Selected projects:")?;
+        if self.selected_projects.is_empty() {
+            writeln!(formatter, "  (none)")?;
+        } else {
+            for project in &self.selected_projects {
+                writeln!(formatter, "  - {} (cost: {})", project.name, project.cost)?;
+            }
+        }
+        write!(formatter, "Total spent: {}", self.total_spent)
+    }
 }
 
 pub struct BudgetStrategy {

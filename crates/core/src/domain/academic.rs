@@ -23,6 +23,24 @@ impl Display for Slate {
     }
 }
 
+impl Display for AcademicOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Winner(slate) => write!(formatter, "Winner: {slate}"),
+            Self::Tie(slates) => write!(
+                formatter,
+                "Tie: {}",
+                slates
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::QuorumNotMet => formatter.write_str("Quorum not met"),
+        }
+    }
+}
+
 impl Slate {
     pub fn new(name: &str) -> Result<Self, AcademicElectionError> {
         let trimmed = name.trim();

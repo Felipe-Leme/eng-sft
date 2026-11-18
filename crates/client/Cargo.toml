@@ -1,0 +1,15 @@
+[package]
+name = "client"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+inquire = "0.9.5"
+reqwest = { version = "0.13.5", features = ["json"] }
+election_core = { package = "core", path = "../core" }
+rust_decimal = "1.43.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["full"] }
+uuid = { version = "1.29.2", features = ["v4"] }

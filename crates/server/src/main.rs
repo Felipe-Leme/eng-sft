@@ -1,12 +1,12 @@
 use std::{env, error::Error, fs, path::PathBuf};
 
-use eng_sft::{
+use serde_json::Value;
+use server::{
     api,
     application::ElectionService,
     domain::factory::ElectionFactory,
     infrastructure::{MemoryInfrastructure, db::init_db},
 };
-use serde_json::Value;
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -31,11 +31,12 @@ async fn run_server() -> Result<(), Box<dyn Error>> {
 }
 
 async fn run_config(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
-    let json = fs::read_to_string(config_path)?;
+    let json = fs::read_to_string(&config_path)?;
     let manifest = ElectionFactory::parse_manifest(&json)?;
     let infrastructure = MemoryInfrastructure::<Value, Value>::new();
     let service = ElectionService::new(infrastructure);
-    let id = service.create_election(manifest).await?;
+    let name = format!("Configuration: {}", config_path.display());
+    let id = service.create_election(name, manifest).await?;
     let outcome = service.close_election(&id).await?;
     println!("{outcome}");
 

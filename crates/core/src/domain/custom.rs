@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+};
 
 use rust_decimal::{Decimal, dec, prelude::FromPrimitive};
 use schemars::JsonSchema;
@@ -111,6 +114,16 @@ pub enum CustomOutcome {
     Winners(Vec<String>),
     Tie(Vec<String>),
     QuorumNotMet,
+}
+
+impl Display for CustomOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Winners(winners) => write!(formatter, "Winners: {}", winners.join(", ")),
+            Self::Tie(options) => write!(formatter, "Tie: {}", options.join(", ")),
+            Self::QuorumNotMet => formatter.write_str("Quorum not met"),
+        }
+    }
 }
 
 #[derive(Debug)]

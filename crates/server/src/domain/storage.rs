@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::{domain::crypto::HashedEventRecord, error::StorageError};
 
@@ -39,10 +40,20 @@ impl<V, O> EventRecord<V, O> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PersistedElection {
+    pub name: String,
     pub manifest: String,
     pub is_closed: bool,
     pub outcome: Option<Value>,
     pub vote_events: Vec<HashedEventRecord<Value, Value>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PersistedElectionSummary {
+    pub id: String,
+    pub name: String,
+    pub manifest: String,
+    pub is_closed: bool,
+    pub outcome: Option<Value>,
 }
 
 #[async_trait::async_trait]
@@ -51,13 +62,21 @@ where
     V: Clone + Send + Sync + 'static,
     O: Clone + Send + Sync + 'static,
 {
-    async fn create_election(&self, id: String, manifest: String) -> Result<(), StorageError>;
+    async fn create_election(
+        &self,
+        id: String,
+        name: String,
+        manifest: String,
+    ) -> Result<(), StorageError>;
 
     async fn get_election(&self, id: &str) -> Result<Option<PersistedElection>, StorageError>;
+
+    async fn list_elections(&self) -> Result<Vec<PersistedElectionSummary>, StorageError>;
 
     async fn append_vote_event(
         &self,
         id: &str,
+        voter_id: Uuid,
         event: HashedEventRecord<Value, Value>,
     ) -> Result<(), StorageError>;
 
