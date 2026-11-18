@@ -1,16 +1,17 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::{
     application::{ElectionService, ElectionServiceError},
-    domain::{manifest::Manifest, storage::Infrastructure},
+    domain::{ElectionSummary, ElectionVote, manifest::Manifest, storage::Infrastructure},
     error::StorageError,
 };
 
@@ -19,7 +20,10 @@ where
     I: Infrastructure<Value, Value> + Clone + Send + Sync + 'static,
 {
     Router::new()
-        .route("/api/elections", post(create_election::<I>))
+        .route(
+            "/api/elections",
+            get(list_elections::<I>).post(create_election::<I>),
+        )
         .route("/api/elections/{id}/votes", post(cast_vote::<I>))
         .route("/api/elections/{id}/close", post(close_election::<I>))
         .with_state(service)
@@ -28,6 +32,22 @@ where
 #[derive(Serialize, Deserialize)]
 pub struct CreateElectionResponse {
     pub id: String,
+}
+
+#[derive(Deserialize)]
+struct CreateElectionRequest {
+    name: String,
+    manifest: Manifest,
+}
+
+async fn list_elections<I>(
+    State(service): State<ElectionService<I>>,
+) -> Result<Json<Vec<ElectionSummary>>, ApiError>
+where
+    I: Infrastructure<Value, Value> + Clone + Send + Sync + 'static,
+{
+    let elections = service.list_elections().await.map_err(ApiError::from)?;
+    Ok(Json(elections))
 }
 
 #[derive(Serialize)]
@@ -48,7 +68,10 @@ impl From<ElectionServiceError> for ApiError {
                 StatusCode::NOT_FOUND
             }
             ElectionServiceError::Infrastructure(
-                StorageError::ElectionClosed | StorageError::ConcurrencyConflict { .. },
+                StorageError::ElectionClosed
+                | StorageError::VoterAlreadyVoted
+                | StorageError::DuplicateElectionName
+                | StorageError::ConcurrencyConflict { .. },
             ) => StatusCode::CONFLICT,
             ElectionServiceError::Infrastructure(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -65,13 +88,13 @@ impl IntoResponse for ApiError {
 
 async fn create_election<I>(
     State(service): State<ElectionService<I>>,
-    Json(manifest): Json<Manifest>,
+    Json(request): Json<CreateElectionRequest>,
 ) -> Result<impl IntoResponse, ApiError>
 where
     I: Infrastructure<Value, Value> + Clone + Send + Sync + 'static,
 {
     let id = service
-        .create_election(manifest)
+        .create_election(request.name, request.manifest)
         .await
         .map_err(ApiError::from)?;
     Ok((StatusCode::CREATED, Json(CreateElectionResponse { id })))
@@ -80,12 +103,26 @@ where
 async fn cast_vote<I>(
     Path(id): Path<String>,
     State(service): State<ElectionService<I>>,
-    Json(vote): Json<Value>,
+    headers: HeaderMap,
+    Json(vote): Json<ElectionVote>,
 ) -> Result<StatusCode, ApiError>
 where
     I: Infrastructure<Value, Value> + Clone + Send + Sync + 'static,
 {
-    service.cast_vote(&id, vote).await.map_err(ApiError::from)?;
+    let voter_id = headers
+        .get("x-voter-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or_else(|| {
+            ApiError(
+                StatusCode::BAD_REQUEST,
+                "Missing or invalid X-Voter-Id header".to_owned(),
+            )
+        })?;
+    service
+        .cast_vote(&id, voter_id, vote)
+        .await
+        .map_err(ApiError::from)?;
     Ok(StatusCode::OK)
 }
 
@@ -113,12 +150,95 @@ mod tests {
     use crate::infrastructure::MemoryInfrastructure;
 
     fn json_request(uri: &str, body: &str) -> Request<Body> {
+        json_request_with_voter(uri, body, "00000000-0000-0000-0000-000000000001")
+    }
+
+    fn json_request_with_voter(uri: &str, body: &str, voter_id: &str) -> Request<Body> {
         Request::builder()
             .method("POST")
             .uri(uri)
             .header("content-type", "application/json")
+            .header("x-voter-id", voter_id)
             .body(Body::from(body.to_owned()))
             .unwrap()
+    }
+
+    fn get_request(uri: &str) -> Request<Body> {
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn list_route_returns_elections_and_persisted_results() {
+        let service = ElectionService::new(MemoryInfrastructure::<Value, Value>::new());
+        let app = app_router(service);
+        let created = app
+            .clone()
+            .oneshot(json_request(
+                "/api/elections",
+                r#"{"name":"Academic election","manifest":{"type":"academic","slates":["A","B"],"votes":[]}}"#,
+            ))
+            .await
+            .unwrap();
+        let body = to_bytes(created.into_body(), usize::MAX).await.unwrap();
+        let created: CreateElectionResponse = serde_json::from_slice(&body).unwrap();
+        let duplicate = app
+            .clone()
+            .oneshot(json_request(
+                "/api/elections",
+                r#"{"name":"academic ELECTION","manifest":{"type":"academic","slates":["A"],"votes":[]}}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(duplicate.status(), StatusCode::CONFLICT);
+
+        let list = app
+            .clone()
+            .oneshot(get_request("/api/elections"))
+            .await
+            .unwrap();
+        assert_eq!(list.status(), StatusCode::OK);
+        let body = to_bytes(list.into_body(), usize::MAX).await.unwrap();
+        let elections: Vec<ElectionSummary> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(elections.len(), 1);
+        assert_eq!(elections[0].id, created.id);
+        assert_eq!(elections[0].name, "Academic election");
+        assert!(matches!(
+            &elections[0].manifest,
+            Manifest::Typed(crate::domain::manifest::TypedManifest::Academic { .. })
+        ));
+        assert!(!elections[0].is_closed);
+        assert!(elections[0].outcome.is_none());
+
+        app.clone()
+            .oneshot(json_request(
+                &format!("/api/elections/{}/votes", created.id),
+                r#""A""#,
+            ))
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/elections/{}/close", created.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let list = app.oneshot(get_request("/api/elections")).await.unwrap();
+        let body = to_bytes(list.into_body(), usize::MAX).await.unwrap();
+        let elections: Vec<ElectionSummary> = serde_json::from_slice(&body).unwrap();
+        assert!(elections[0].is_closed);
+        assert_eq!(
+            elections[0].outcome,
+            Some(serde_json::json!({"Winner": "A"}))
+        );
     }
 
     #[tokio::test]
@@ -135,6 +255,11 @@ mod tests {
                 StatusCode::NOT_FOUND,
             ),
             (StorageError::ElectionClosed.into(), StatusCode::CONFLICT),
+            (StorageError::VoterAlreadyVoted.into(), StatusCode::CONFLICT),
+            (
+                StorageError::DuplicateElectionName.into(),
+                StatusCode::CONFLICT,
+            ),
             (
                 StorageError::ConcurrencyConflict {
                     expected: 1,
@@ -169,7 +294,7 @@ mod tests {
             .clone()
             .oneshot(json_request(
                 "/api/elections",
-                r#"{"type":"academic","slates":["A","B"],"votes":[]}"#,
+                r#"{"name":"Election","manifest":{"type":"academic","slates":["A","B"],"votes":[]}}"#,
             ))
             .await
             .unwrap();
@@ -177,6 +302,20 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let created: CreateElectionResponse = serde_json::from_slice(&body).unwrap();
         let vote_uri = format!("/api/elections/{}/votes", created.id);
+
+        let missing_voter_id = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&vote_uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#""A""#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_voter_id.status(), StatusCode::BAD_REQUEST);
 
         assert_eq!(
             app.clone()
@@ -189,6 +328,14 @@ mod tests {
         assert_eq!(
             app.clone()
                 .oneshot(json_request(&vote_uri, r#""unknown""#))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(json_request(&vote_uri, r#"["A"]"#))
                 .await
                 .unwrap()
                 .status(),
@@ -209,6 +356,18 @@ mod tests {
                 .unwrap()
                 .status(),
             StatusCode::OK
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(json_request_with_voter(
+                    &vote_uri,
+                    r#""A""#,
+                    "00000000-0000-0000-0000-000000000001",
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
         );
         assert_eq!(
             app.clone()
@@ -244,10 +403,16 @@ mod tests {
         }))
         .unwrap();
 
-        let response = create_election(State(service.clone()), Json(manifest))
-            .await
-            .unwrap()
-            .into_response();
+        let response = create_election(
+            State(service.clone()),
+            Json(CreateElectionRequest {
+                name: "Direct test election".to_owned(),
+                manifest,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let created: CreateElectionResponse = serde_json::from_slice(&body).unwrap();
 
@@ -255,7 +420,13 @@ mod tests {
             cast_vote(
                 Path(created.id.clone()),
                 State(service.clone()),
-                Json(serde_json::json!("A")),
+                HeaderMap::from_iter([(
+                    axum::http::header::HeaderName::from_static("x-voter-id"),
+                    "00000000-0000-0000-0000-000000000002".parse().unwrap(),
+                )]),
+                Json(ElectionVote::Academic(
+                    crate::domain::academic::Slate::new("A").unwrap()
+                )),
             )
             .await
             .unwrap(),
@@ -278,11 +449,18 @@ mod tests {
             "votes": []
         }))
         .unwrap();
-        let id = service.create_election(manifest).await.unwrap();
+        let id = service
+            .create_election("Invalid vote test".to_owned(), manifest)
+            .await
+            .unwrap();
 
         assert!(
             service
-                .cast_vote(&id, serde_json::json!("unknown"))
+                .cast_vote(
+                    &id,
+                    Uuid::from_u128(3),
+                    ElectionVote::Academic(crate::domain::academic::Slate::new("unknown").unwrap()),
+                )
                 .await
                 .is_err()
         );

@@ -6,11 +6,14 @@ use sqlx::{
     Pool, Row, Sqlite,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
+use uuid::Uuid;
 
 use crate::{
     domain::{
         crypto::HashedEventRecord,
-        storage::{ElectionEvent, EventRecord, Infrastructure, PersistedElection},
+        storage::{
+            ElectionEvent, EventRecord, Infrastructure, PersistedElection, PersistedElectionSummary,
+        },
     },
     error::StorageError,
 };
@@ -42,10 +45,45 @@ pub async fn init_db(database_url: &str) -> Result<SqliteInfrastructure, sqlx::E
         r#"
         CREATE TABLE IF NOT EXISTS elections (
             id TEXT PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL,
             manifest TEXT NOT NULL CHECK (json_valid(manifest)),
             status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
             outcome TEXT CHECK (outcome IS NULL OR json_valid(outcome)),
             created_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    let election_columns = sqlx::query("PRAGMA table_info(elections)")
+        .fetch_all(&pool)
+        .await?;
+    let has_name = election_columns.iter().any(|row| {
+        row.try_get::<String, _>("name")
+            .is_ok_and(|column| column == "name")
+    });
+    if !has_name {
+        sqlx::query("ALTER TABLE elections ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+            .execute(&pool)
+            .await?;
+        sqlx::query("UPDATE elections SET name = 'Election ' || id WHERE name = ''")
+            .execute(&pool)
+            .await?;
+    }
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS elections_name_unique ON elections(name COLLATE NOCASE)",
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS election_voters (
+            election_id TEXT NOT NULL,
+            voter_id TEXT NOT NULL,
+            PRIMARY KEY (election_id, voter_id),
+            FOREIGN KEY (election_id) REFERENCES elections(id) ON DELETE CASCADE
         )
         "#,
     )
@@ -94,35 +132,55 @@ fn storage_write_error(error: impl ToString) -> StorageError {
     StorageError::AppendFailed(error.to_string())
 }
 
+fn storage_create_error(error: sqlx::Error) -> StorageError {
+    if let Some(database_error) = error.as_database_error()
+        && database_error.is_unique_violation()
+    {
+        if database_error.message().contains("elections.name") {
+            return StorageError::DuplicateElectionName;
+        }
+        return StorageError::AppendFailed(error.to_string());
+    }
+    storage_write_error(error)
+}
+
 #[async_trait::async_trait]
 impl<V, O> Infrastructure<V, O> for SqliteInfrastructure
 where
     V: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
     O: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
 {
-    async fn create_election(&self, id: String, manifest: String) -> Result<(), StorageError> {
+    async fn create_election(
+        &self,
+        id: String,
+        name: String,
+        manifest: String,
+    ) -> Result<(), StorageError> {
         sqlx::query(
-            "INSERT INTO elections (id, manifest, status, created_at) VALUES (?, ?, 'open', ?)",
+            "INSERT INTO elections (id, name, manifest, status, created_at) VALUES (?, ?, ?, 'open', ?)",
         )
         .bind(id)
+        .bind(name)
         .bind(manifest)
         .bind(chrono::Utc::now().to_rfc3339())
         .execute(&self.pool)
         .await
-        .map_err(storage_write_error)?;
+        .map_err(storage_create_error)?;
         Ok(())
     }
 
     async fn get_election(&self, id: &str) -> Result<Option<PersistedElection>, StorageError> {
-        let Some(row) = sqlx::query("SELECT manifest, status, outcome FROM elections WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(storage_read_error)?
+        let Some(row) =
+            sqlx::query("SELECT name, manifest, status, outcome FROM elections WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(storage_read_error)?
         else {
             return Ok(None);
         };
 
+        let name: String = row.try_get("name").map_err(storage_read_error)?;
         let manifest: String = row.try_get("manifest").map_err(storage_read_error)?;
         let status: String = row.try_get("status").map_err(storage_read_error)?;
         let outcome_json: Option<String> = row.try_get("outcome").map_err(storage_read_error)?;
@@ -167,6 +225,7 @@ where
             .collect::<Result<Vec<_>, StorageError>>()?;
 
         Ok(Some(PersistedElection {
+            name,
             manifest,
             is_closed: status == "closed",
             outcome,
@@ -174,9 +233,50 @@ where
         }))
     }
 
+    async fn list_elections(&self) -> Result<Vec<PersistedElectionSummary>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT id, name, manifest, status, outcome FROM elections ORDER BY created_at, id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage_read_error)?;
+
+        rows.into_iter()
+            .map(|row| {
+                let id: String = row.try_get("id").map_err(storage_read_error)?;
+                let name: String = row.try_get("name").map_err(storage_read_error)?;
+                let manifest: String = row.try_get("manifest").map_err(storage_read_error)?;
+                let status: String = row.try_get("status").map_err(storage_read_error)?;
+                let is_closed = match status.as_str() {
+                    "open" => false,
+                    "closed" => true,
+                    other => {
+                        return Err(storage_read_error(format!(
+                            "Unsupported election status: {other}"
+                        )));
+                    }
+                };
+                let outcome_json: Option<String> =
+                    row.try_get("outcome").map_err(storage_read_error)?;
+                let outcome = outcome_json
+                    .map(|json| serde_json::from_str(&json).map_err(storage_read_error))
+                    .transpose()?;
+
+                Ok(PersistedElectionSummary {
+                    id,
+                    name,
+                    manifest,
+                    is_closed,
+                    outcome,
+                })
+            })
+            .collect()
+    }
+
     async fn append_vote_event(
         &self,
         id: &str,
+        voter_id: Uuid,
         event: HashedEventRecord<Value, Value>,
     ) -> Result<(), StorageError> {
         if !event.verify().map_err(storage_write_error)? {
@@ -232,6 +332,21 @@ where
         let ElectionEvent::VoteCast(vote) = &event.payload else {
             return Err(storage_write_error("Unsupported election event"));
         };
+        sqlx::query("INSERT INTO election_voters (election_id, voter_id) VALUES (?, ?)")
+            .bind(id)
+            .bind(voter_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| {
+                if error
+                    .as_database_error()
+                    .is_some_and(|database_error| database_error.is_unique_violation())
+                {
+                    StorageError::VoterAlreadyVoted
+                } else {
+                    storage_write_error(error)
+                }
+            })?;
         let payload = serde_json::to_string(vote).map_err(storage_write_error)?;
         let sequence = i64::try_from(event.sequence).map_err(storage_write_error)?;
         sqlx::query(
@@ -394,6 +509,10 @@ mod tests {
         .unwrap()
     }
 
+    fn voter_id() -> Uuid {
+        Uuid::from_u128(1)
+    }
+
     #[tokio::test]
     async fn initializes_a_database_with_constrained_persistence_schema() {
         let infrastructure = init_db("sqlite::memory:").await.unwrap();
@@ -410,6 +529,7 @@ mod tests {
                 .unwrap();
 
         assert!(election_columns.contains(&"manifest".to_owned()));
+        assert!(election_columns.contains(&"name".to_owned()));
         assert!(election_columns.contains(&"status".to_owned()));
         assert!(election_columns.contains(&"outcome".to_owned()));
         assert!(event_columns.contains(&"sequence".to_owned()));
@@ -458,7 +578,7 @@ mod tests {
         assert_eq!(store.get_election("missing").await.unwrap(), None);
         assert_eq!(
             store
-                .append_vote_event("missing", vote_event(1, GENESIS_HASH))
+                .append_vote_event("missing", voter_id(), vote_event(1, GENESIS_HASH))
                 .await,
             Err(StorageError::ElectionNotFound("missing".to_owned()))
         );
@@ -472,6 +592,7 @@ mod tests {
         store
             .create_election(
                 "election".to_owned(),
+                "Election".to_owned(),
                 r#"{"type":"academic","slates":["A"],"votes":[]}"#.to_owned(),
             )
             .await
@@ -480,11 +601,22 @@ mod tests {
             store
                 .create_election(
                     "election".to_owned(),
+                    "Another election".to_owned(),
                     r#"{"type":"academic","slates":["A"],"votes":[]}"#.to_owned(),
                 )
                 .await,
             Err(StorageError::AppendFailed(_))
         ));
+        assert_eq!(
+            store
+                .create_election(
+                    "another-id".to_owned(),
+                    "eLECTION".to_owned(),
+                    r#"{"type":"academic","slates":["A"],"votes":[]}"#.to_owned(),
+                )
+                .await,
+            Err(StorageError::DuplicateElectionName)
+        );
 
         let unsupported_event = HashedEventRecord::new(
             1,
@@ -494,19 +626,23 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            store.append_vote_event("election", unsupported_event).await,
+            store
+                .append_vote_event("election", voter_id(), unsupported_event)
+                .await,
             Err(StorageError::AppendFailed(_))
         ));
 
         let mut invalid_hash = vote_event(1, GENESIS_HASH);
         invalid_hash.current_hash.push('0');
         assert!(matches!(
-            store.append_vote_event("election", invalid_hash).await,
+            store
+                .append_vote_event("election", voter_id(), invalid_hash)
+                .await,
             Err(StorageError::AppendFailed(_))
         ));
         assert_eq!(
             store
-                .append_vote_event("election", vote_event(2, GENESIS_HASH))
+                .append_vote_event("election", voter_id(), vote_event(2, GENESIS_HASH))
                 .await,
             Err(StorageError::ConcurrencyConflict {
                 expected: 1,
@@ -516,14 +652,23 @@ mod tests {
         let incorrect_previous = "f".repeat(64);
         assert!(matches!(
             store
-                .append_vote_event("election", vote_event(1, &incorrect_previous))
+                .append_vote_event("election", voter_id(), vote_event(1, &incorrect_previous))
                 .await,
             Err(StorageError::AppendFailed(_))
         ));
 
         let event = vote_event(1, GENESIS_HASH);
         let current_hash = event.current_hash.clone();
-        store.append_vote_event("election", event).await.unwrap();
+        store
+            .append_vote_event("election", voter_id(), event)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .append_vote_event("election", voter_id(), vote_event(2, &current_hash),)
+                .await,
+            Err(StorageError::VoterAlreadyVoted)
+        );
         let persisted = store.get_election("election").await.unwrap().unwrap();
         assert_eq!(persisted.vote_events.len(), 1);
         assert_eq!(persisted.vote_events[0].current_hash, current_hash);
@@ -555,7 +700,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .append_vote_event("election", vote_event(2, &current_hash))
+                .append_vote_event("election", Uuid::from_u128(2), vote_event(2, &current_hash))
                 .await,
             Err(StorageError::ElectionClosed)
         );

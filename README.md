@@ -80,7 +80,7 @@ O projeto adota uma abordagem de **Kanban Contínuo** adaptada para equipe solo,
 Inicie o servidor local:
 
 ```sh
-cargo run
+cargo run -p server
 ```
 
 O servidor cria e usa o arquivo SQLite local `eng-sft.db` no diretório de
@@ -88,27 +88,44 @@ execução. Ele escuta em `http://localhost:3000` e oferece estes endpoints:
 
 | Método | Caminho | Descrição |
 | ----- | ----- | ----- |
-| `POST` | `/api/elections` | Cria uma eleição a partir de um manifesto JSON e retorna seu `id`. |
-| `POST` | `/api/elections/{id}/votes` | Registra um voto JSON para a eleição. |
+| `GET` | `/api/elections` | Lista eleições com manifesto, estado e resultado disponível. |
+| `POST` | `/api/elections` | Cria uma eleição nomeada a partir de um manifesto JSON e retorna seu `id`. |
+| `POST` | `/api/elections/{id}/votes` | Registra um voto JSON para a eleição; exige `X-Voter-Id`. |
 | `POST` | `/api/elections/{id}/close` | Fecha a eleição e retorna o resultado JSON. |
 
-O corpo de `POST /api/elections` tem o mesmo formato de manifesto descrito
-abaixo. Cada voto deve ser JSON no formato esperado pelo tipo da eleição; por
-exemplo, uma eleição acadêmica recebe uma string como `"A"`. O endpoint de
-fechamento persiste o resultado e impede novos votos ou fechamentos. Os
-manifestos, resultados e eventos de voto encadeados por hash são persistidos no
-banco. Erros da API retornam um status HTTP apropriado e um objeto JSON com a
-mensagem em `error`.
+Execute o cliente interativo em outro terminal com `cargo run -p client`.
+Na tela inicial, escolha `User Access` para selecionar eleições, votar e
+consultar resultados disponíveis, ou `Admin Access` para criar eleições e
+apurar/encerrar eleições abertas. Ambas as áreas oferecem uma opção `Back`
+para retornar à tela inicial. A seleção de acesso organiza a interface, mas
+não é uma autenticação de administrador.
+
+O cliente coleta os detalhes de manifestos e cédulas por meio de escolhas e
+campos de valor, sem exigir que usuários escrevam JSON. Os tipos de manifesto e
+cédula são compartilhados pelo crate `core`, usado tanto pelo cliente quanto
+pelo servidor.
+
+O corpo de `POST /api/elections` contém um `name` exclusivo e o manifesto no
+campo `manifest`. Cada voto deve ser JSON no formato esperado pelo tipo da
+eleição; por exemplo, uma eleição acadêmica recebe uma string como `"A"`.
+Envie um UUID no cabeçalho `X-Voter-Id`: o servidor impede mais de um voto
+desse UUID na mesma eleição. O cliente gera esse UUID ao iniciar e a opção
+`Reroll voter UUID` gera outro para facilitar testes; isso não autentica a
+identidade de uma pessoa. O endpoint de fechamento persiste o resultado e
+impede novos votos ou fechamentos. Os manifestos, resultados e eventos de voto
+encadeados por hash são persistidos no banco. Erros da API retornam um status
+HTTP apropriado e um objeto JSON com a mensagem em `error`.
 
 Exemplo criando e votando em uma eleição acadêmica:
 
 ```sh
 curl -X POST http://localhost:3000/api/elections \
   -H 'content-type: application/json' \
-  -d '{"type":"academic","slates":["A","B"],"minimum_quorum":1,"votes":[]}'
+  -d '{"name":"Eleição acadêmica 2026","manifest":{"type":"academic","slates":["A","B"],"minimum_quorum":1,"votes":[]}}'
 
 curl -X POST http://localhost:3000/api/elections/ID/votes \
   -H 'content-type: application/json' \
+  -H 'x-voter-id: 00000000-0000-4000-8000-000000000001' \
   -d '"A"'
 
 curl -X POST http://localhost:3000/api/elections/ID/close
@@ -120,7 +137,7 @@ Para executar o fluxo anterior de linha de comando e apurar uma configuração
 localmente sem iniciar o servidor, passe o caminho do manifesto:
 
 ```sh
-cargo run -- caminho/para/config.json
+cargo run -p server -- caminho/para/config.json
 ```
 
 O comando de configuração usa a implementação em memória de `Infrastructure`;
@@ -161,7 +178,7 @@ Gere o JSON Schema do manifesto (eleições padrão e customizadas) com descriç
 e dicas para editores que suportam schema JSON:
 
 ```sh
-cargo run --bin generate_schema
+cargo run -p server --bin generate_schema
 ```
 
 Por padrão, o comando atualiza `src/config.schema.json`. Um caminho de saída

@@ -21,16 +21,18 @@ impl<S: TallyStrategy> Election<S, Open> {
 
     pub fn cast_vote(&mut self, vote: S::Vote) -> Result<(), ElectionError> {
         self.validate_vote(&vote)?;
-        self.record_validated_vote(vote);
+        self.votes.push(vote);
         Ok(())
     }
 
-    pub(crate) fn validate_vote(&self, vote: &S::Vote) -> Result<(), ElectionError> {
+    pub fn validate_vote(&self, vote: &S::Vote) -> Result<(), ElectionError> {
         self.strategy.validate(vote)
     }
 
-    pub(crate) fn record_validated_vote(&mut self, vote: S::Vote) {
+    pub fn record_vote(&mut self, vote: S::Vote) -> Result<(), ElectionError> {
+        self.validate_vote(&vote)?;
         self.votes.push(vote);
+        Ok(())
     }
 
     pub fn close(self) -> Election<S, Closed> {

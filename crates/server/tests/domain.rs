@@ -1,12 +1,14 @@
-use eng_sft::{
+use rust_decimal::dec;
+use server::{
     domain::{
+        ElectionVote,
         academic::{AcademicElectionBuilder, AcademicOutcome, Slate},
         budget::{BudgetElectionBuilder, BudgetOutcome, Project},
         condo::{CondoElectionBuilder, CondoOutcome, CondoVote},
         crypto::{GENESIS_HASH, HashedEventRecord, verify_chain},
         custom::{
-            CustomElection, CustomElectionConfig, CustomOutcome, CustomRuleSet, CustomRuleStrategy,
-            CustomVote,
+            self, CustomElection, CustomElectionConfig, CustomOutcome, CustomRuleSet,
+            CustomRuleStrategy, CustomVote,
         },
         election::{Election, Open},
         factory::ElectionFactory,
@@ -14,11 +16,10 @@ use eng_sft::{
         merkle::MerkleTree,
         storage::{ElectionEvent, EventRecord, Infrastructure},
     },
-    error::{ElectionError, IdentityError, VotingFacadeError},
+    error::{ElectionError, IdentityError, StorageError, VotingFacadeError},
     infrastructure::MemoryInfrastructure,
     types::Percentage,
 };
-use rust_decimal::dec;
 
 #[test]
 fn academic_election_rejects_unknown_slate_and_tallies_votes() {
@@ -198,7 +199,7 @@ async fn memory_infrastructure_enforces_sequential_appends() {
         .unwrap_err();
     assert_eq!(
         error,
-        eng_sft::error::StorageError::ConcurrencyConflict {
+        StorageError::ConcurrencyConflict {
             expected: 2,
             got: 3,
         }
@@ -211,7 +212,10 @@ fn custom_election_loads_json_config_validates_ballots_and_tallies() {
     let mut election = ElectionFactory::from_file("src/config.json").unwrap();
 
     assert!(matches!(
-        election.cast_vote(serde_json::json!({"choices": ["Unknown"], "weight": "1"})),
+        election.cast_vote(ElectionVote::Custom(CustomVote {
+            choices: vec!["Unknown".to_owned()],
+            weight: dec!(1),
+        })),
         Err(message) if message.contains("Unknown option")
     ));
 
@@ -261,10 +265,10 @@ fn custom_election_schema_describes_decimal_fields_as_strings() {
 fn custom_election_reports_unmet_ballot_quorum() {
     let strategy = CustomRuleStrategy::new(CustomRuleSet {
         options: vec!["A".into(), "B".into()],
-        scoring: eng_sft::domain::custom::ScoringRule::Plurality,
-        weighting: eng_sft::domain::custom::WeightingRule::Uniform,
-        quorum: eng_sft::domain::custom::QuorumRule::MinBallots { min: 2 },
-        tie_breaker: eng_sft::domain::custom::TieBreakerRule::Alphabetical,
+        scoring: custom::ScoringRule::Plurality,
+        weighting: custom::WeightingRule::Uniform,
+        quorum: custom::QuorumRule::MinBallots { min: 2 },
+        tie_breaker: custom::TieBreakerRule::Alphabetical,
         winner_count: 1,
     })
     .unwrap();

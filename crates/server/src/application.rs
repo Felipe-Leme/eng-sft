@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
+        ElectionSummary, ElectionVote,
         crypto::{GENESIS_HASH, HashedEventRecord, verify_chain},
         factory::{ElectionFactory, OpenElection},
         manifest::Manifest,
@@ -46,25 +47,62 @@ where
 
     pub async fn create_election(
         &self,
+        name: String,
         manifest: Manifest,
     ) -> Result<String, ElectionServiceError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(ElectionServiceError::Invalid(
+                "Election name cannot be empty".to_owned(),
+            ));
+        }
         ElectionFactory::create(manifest.clone())
             .map_err(|error| ElectionServiceError::Invalid(error.to_string()))?;
         let id = Uuid::new_v4().to_string();
         let manifest = serde_json::to_string(&manifest)
             .map_err(|error| ElectionServiceError::Invalid(error.to_string()))?;
         self.infrastructure
-            .create_election(id.clone(), manifest)
+            .create_election(id.clone(), name.to_owned(), manifest)
             .await?;
         Ok(id)
     }
 
-    pub async fn cast_vote(&self, id: &str, vote: Value) -> Result<(), ElectionServiceError> {
+    pub async fn list_elections(&self) -> Result<Vec<ElectionSummary>, ElectionServiceError> {
+        self.infrastructure
+            .list_elections()
+            .await?
+            .into_iter()
+            .map(|election| {
+                Ok(ElectionSummary {
+                    id: election.id,
+                    name: election.name,
+                    manifest: serde_json::from_str::<Manifest>(&election.manifest).map_err(
+                        |error| {
+                            ElectionServiceError::Infrastructure(StorageError::ReadFailed(
+                                error.to_string(),
+                            ))
+                        },
+                    )?,
+                    is_closed: election.is_closed,
+                    outcome: election.outcome,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn cast_vote(
+        &self,
+        id: &str,
+        voter_id: Uuid,
+        vote: ElectionVote,
+    ) -> Result<(), ElectionServiceError> {
         let stored = self.load_open_election(id).await?;
         let mut election = restore_election(&stored)?;
         election
             .cast_vote(vote.clone())
             .map_err(ElectionServiceError::Invalid)?;
+        let vote = serde_json::to_value(vote)
+            .map_err(|error| ElectionServiceError::Invalid(error.to_string()))?;
 
         let sequence = stored
             .vote_events
@@ -89,7 +127,9 @@ where
             ElectionEvent::<Value, Value>::VoteCast(vote),
         )
         .map_err(ElectionServiceError::Infrastructure)?;
-        self.infrastructure.append_vote_event(id, event).await?;
+        self.infrastructure
+            .append_vote_event(id, voter_id, event)
+            .await?;
         Ok(())
     }
 
@@ -136,7 +176,7 @@ fn verify_events(events: &[HashedEventRecord<Value, Value>]) -> Result<(), Elect
 }
 
 fn restore_election(stored: &PersistedElection) -> Result<OpenElection, ElectionServiceError> {
-    let manifest = serde_json::from_str(&stored.manifest).map_err(|error| {
+    let manifest = serde_json::from_str::<Manifest>(&stored.manifest).map_err(|error| {
         ElectionServiceError::Infrastructure(StorageError::ReadFailed(error.to_string()))
     })?;
     let mut election = ElectionFactory::create(manifest).map_err(|error| {
@@ -148,7 +188,10 @@ fn restore_election(stored: &PersistedElection) -> Result<OpenElection, Election
                 StorageError::ReadFailed("Unsupported election event".to_owned()),
             ));
         };
-        election.cast_vote(vote.clone()).map_err(|error| {
+        let vote = serde_json::from_value::<ElectionVote>(vote.clone()).map_err(|error| {
+            ElectionServiceError::Infrastructure(StorageError::ReadFailed(error.to_string()))
+        })?;
+        election.cast_vote(vote).map_err(|error| {
             ElectionServiceError::Infrastructure(StorageError::ReadFailed(error))
         })?;
     }
@@ -161,11 +204,17 @@ mod tests {
 
     use crate::{
         domain::{
+            ElectionVote,
+            academic::Slate,
             crypto::HashedEventRecord,
             storage::{ElectionEvent, Infrastructure},
         },
         infrastructure::db::{SqliteInfrastructure, init_db},
     };
+
+    fn academic_vote(choice: &str) -> ElectionVote {
+        ElectionVote::Academic(Slate::new(choice).unwrap())
+    }
 
     #[test]
     fn rejects_tampered_history_and_invalid_persisted_elections() {
@@ -186,6 +235,7 @@ mod tests {
         ));
 
         let invalid_manifest = PersistedElection {
+            name: "invalid".to_owned(),
             manifest: "not JSON".to_owned(),
             is_closed: false,
             outcome: None,
@@ -206,6 +256,7 @@ mod tests {
         )
         .unwrap();
         let unsupported_history = PersistedElection {
+            name: "unsupported".to_owned(),
             manifest: r#"{"type":"academic","slates":["A"],"votes":[]}"#.to_owned(),
             is_closed: false,
             outcome: None,
@@ -226,6 +277,7 @@ mod tests {
         )
         .unwrap();
         let invalid_history = PersistedElection {
+            name: "invalid vote".to_owned(),
             manifest: r#"{"type":"academic","slates":["A"],"votes":[]}"#.to_owned(),
             is_closed: false,
             outcome: None,
@@ -250,7 +302,9 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(
-            service.create_election(invalid_manifest).await,
+            service
+                .create_election("Invalid election".to_owned(), invalid_manifest)
+                .await,
             Err(ElectionServiceError::Invalid(_))
         ));
 
@@ -260,23 +314,54 @@ mod tests {
             "votes": []
         }))
         .unwrap();
-        let id = service.create_election(manifest).await.unwrap();
+        let id = service
+            .create_election("Election".to_owned(), manifest)
+            .await
+            .unwrap();
+        let duplicate_manifest = serde_json::from_value(serde_json::json!({
+            "type": "academic",
+            "slates": ["A"],
+            "votes": []
+        }))
+        .unwrap();
         assert!(matches!(
-            service.cast_vote("missing", serde_json::json!("A")).await,
+            service
+                .create_election(" election ".to_owned(), duplicate_manifest)
+                .await,
+            Err(ElectionServiceError::Infrastructure(
+                StorageError::DuplicateElectionName
+            ))
+        ));
+        assert!(matches!(
+            service
+                .cast_vote("missing", Uuid::from_u128(1), academic_vote("A"))
+                .await,
             Err(ElectionServiceError::NotFound)
         ));
         assert!(matches!(
-            service.cast_vote(&id, serde_json::json!("unknown")).await,
+            service
+                .cast_vote(&id, Uuid::from_u128(1), academic_vote("unknown"))
+                .await,
             Err(ElectionServiceError::Invalid(_))
         ));
 
         service
-            .cast_vote(&id, serde_json::json!("A"))
+            .cast_vote(&id, Uuid::from_u128(1), academic_vote("A"))
             .await
             .unwrap();
+        assert!(matches!(
+            service
+                .cast_vote(&id, Uuid::from_u128(1), academic_vote("A"))
+                .await,
+            Err(ElectionServiceError::Infrastructure(
+                StorageError::VoterAlreadyVoted
+            ))
+        ));
         service.close_election(&id).await.unwrap();
         assert!(matches!(
-            service.cast_vote(&id, serde_json::json!("A")).await,
+            service
+                .cast_vote(&id, Uuid::from_u128(1), academic_vote("A"))
+                .await,
             Err(ElectionServiceError::Closed)
         ));
         assert!(matches!(
@@ -298,9 +383,18 @@ mod tests {
             "votes": []
         }))
         .unwrap();
-        let id = service.create_election(manifest).await.unwrap();
+        let id = service
+            .create_election("SQLite election".to_owned(), manifest)
+            .await
+            .unwrap();
+        let elections = service.list_elections().await.unwrap();
+        assert_eq!(elections.len(), 1);
+        assert_eq!(elections[0].id, id);
+        assert_eq!(elections[0].name, "SQLite election");
+        assert!(!elections[0].is_closed);
+        assert!(elections[0].outcome.is_none());
         service
-            .cast_vote(&id, serde_json::json!("A"))
+            .cast_vote(&id, Uuid::from_u128(2), academic_vote("A"))
             .await
             .unwrap();
 
@@ -326,6 +420,9 @@ mod tests {
         let service = ElectionService::new(infrastructure.clone());
         let outcome = service.close_election(&id).await.unwrap();
         assert_eq!(outcome, serde_json::json!({"Winner": "A"}));
+        let elections = service.list_elections().await.unwrap();
+        assert!(elections[0].is_closed);
+        assert_eq!(elections[0].outcome, Some(outcome.clone()));
 
         let election = <_ as Infrastructure<Value, Value>>::get_election(&infrastructure, &id)
             .await

@@ -148,7 +148,9 @@ where
                 EventRecord::new(sequence, ElectionEvent::VoteCast(vote.clone())),
             )
             .await?;
-        self.election.record_validated_vote(vote);
+        self.election
+            .record_vote(vote)
+            .map_err(VotingFacadeError::Election)?;
         self.allowlist.consume(token);
 
         Ok(())
@@ -195,7 +197,7 @@ fn next_sequence(current: u64) -> Result<u64, VotingFacadeError> {
 mod tests {
     use crate::domain::{
         academic::{AcademicElectionBuilder, AcademicOutcome, Slate},
-        storage::PersistedElection,
+        storage::{PersistedElection, PersistedElectionSummary},
     };
     use crate::error::StorageError;
     use crate::infrastructure::MemoryInfrastructure;
@@ -210,20 +212,30 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Infrastructure<Slate, AcademicOutcome> for FailOnceOnVoteStore {
-        async fn create_election(&self, id: String, manifest: String) -> Result<(), StorageError> {
-            self.inner.create_election(id, manifest).await
+        async fn create_election(
+            &self,
+            id: String,
+            name: String,
+            manifest: String,
+        ) -> Result<(), StorageError> {
+            self.inner.create_election(id, name, manifest).await
         }
 
         async fn get_election(&self, id: &str) -> Result<Option<PersistedElection>, StorageError> {
             self.inner.get_election(id).await
         }
 
+        async fn list_elections(&self) -> Result<Vec<PersistedElectionSummary>, StorageError> {
+            self.inner.list_elections().await
+        }
+
         async fn append_vote_event(
             &self,
             id: &str,
+            voter_id: uuid::Uuid,
             event: crate::domain::crypto::HashedEventRecord<serde_json::Value, serde_json::Value>,
         ) -> Result<(), StorageError> {
-            self.inner.append_vote_event(id, event).await
+            self.inner.append_vote_event(id, voter_id, event).await
         }
 
         async fn close_election(

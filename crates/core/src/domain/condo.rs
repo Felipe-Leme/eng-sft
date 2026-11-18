@@ -1,7 +1,7 @@
 use rust_decimal::Decimal;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::HashSet;
+use std::{collections::HashSet, fmt::Display};
 
 use crate::{
     domain::{
@@ -48,6 +48,16 @@ pub enum CondoOutcome {
     Winner(String),
     Tie(Vec<String>),
     QuorumNotMet,
+}
+
+impl Display for CondoOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Winner(option) => write!(formatter, "Winner: {option}"),
+            Self::Tie(options) => write!(formatter, "Tie: {}", options.join(", ")),
+            Self::QuorumNotMet => formatter.write_str("Quorum not met"),
+        }
+    }
 }
 
 pub struct CondoStrategy {

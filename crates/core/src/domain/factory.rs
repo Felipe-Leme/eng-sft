@@ -1,18 +1,19 @@
 use std::{fs, path::Path};
 
 use rust_decimal::Decimal;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
     domain::{
-        academic::AcademicElectionBuilder,
+        academic::{AcademicElectionBuilder, Slate},
         budget::BudgetElectionBuilder,
         condo::{CondoElectionBuilder, CondoVote},
         custom::CustomRuleStrategy,
         election::{Election, Open},
         manifest::{Manifest, TypedManifest},
         strategy::TallyStrategy,
+        vote::{ElectionVote, TypedBallot},
     },
     error::{
         AcademicElectionError, BudgetElectionError, CondoElectionError, CustomElectionError,
@@ -42,7 +43,7 @@ pub enum ElectionFactoryError {
 pub struct ElectionFactory;
 
 pub trait ElectionBoundary: Send + Sync {
-    fn cast_vote(&mut self, vote: serde_json::Value) -> Result<(), String>;
+    fn cast_vote(&mut self, vote: ElectionVote) -> Result<(), String>;
     fn close(self: Box<Self>) -> Result<serde_json::Value, String>;
 }
 
@@ -51,11 +52,11 @@ pub type OpenElection = Box<dyn ElectionBoundary>;
 impl<S> ElectionBoundary for Election<S, Open>
 where
     S: TallyStrategy + Send + Sync + 'static,
-    S::Vote: DeserializeOwned + Send + Sync,
+    S::Vote: TypedBallot + Send + Sync,
     S::Outcome: Serialize,
 {
-    fn cast_vote(&mut self, vote: serde_json::Value) -> Result<(), String> {
-        let vote = serde_json::from_value(vote).map_err(|error| error.to_string())?;
+    fn cast_vote(&mut self, vote: ElectionVote) -> Result<(), String> {
+        let vote = S::Vote::from_election_vote(vote)?;
         Election::cast_vote(self, vote).map_err(|error| error.to_string())
     }
 
@@ -103,7 +104,7 @@ impl ElectionFactory {
                     .with_quorum(minimum_quorum);
                 let mut election = builder.build()?;
                 for vote in votes {
-                    election.cast_vote(crate::domain::academic::Slate::new(&vote)?)?;
+                    election.cast_vote(Slate::new(&vote)?)?;
                 }
                 Ok(Box::new(election))
             }
@@ -174,7 +175,9 @@ mod tests {
             r#"{"type":"academic","slates":["A","B"],"minimum_quorum":2,"votes":["A","A"]}"#,
         )
         .unwrap();
-        academic.cast_vote(serde_json::json!("A")).unwrap();
+        academic
+            .cast_vote(ElectionVote::Academic(Slate::new("A").unwrap()))
+            .unwrap();
         let academic = academic.close().unwrap();
         assert_eq!(academic, serde_json::json!({"Winner": "A"}));
 
@@ -198,7 +201,21 @@ mod tests {
 
     #[test]
     fn loads_the_existing_untagged_custom_manifest() {
-        let json = include_str!("../config.json");
+        let json = r#"{
+            "rules": {
+                "options": ["VERY EVIL CANDIDATE", "SLIGHTLY LESS EVIL CANDIDATE"],
+                "scoring": {"type": "plurality"},
+                "weighting": {"type": "uniform"},
+                "quorum": {"type": "min_ballots", "min": 3},
+                "tie_breaker": {"type": "registration_order"},
+                "winner_count": 1
+            },
+            "votes": [
+                {"choices": ["VERY EVIL CANDIDATE"]},
+                {"choices": ["SLIGHTLY LESS EVIL CANDIDATE"]},
+                {"choices": ["SLIGHTLY LESS EVIL CANDIDATE"]}
+            ]
+        }"#;
         let election = ElectionFactory::from_json(json).unwrap();
         let result = election.close().unwrap();
         assert_eq!(
@@ -217,8 +234,8 @@ mod tests {
         let mut election =
             ElectionFactory::from_json(r#"{"type":"academic","slates":["A"],"votes":[]}"#).unwrap();
         assert!(matches!(
-            election.cast_vote(serde_json::json!(["P"])),
-            Err(message) if message.contains("invalid type")
+            election.cast_vote(ElectionVote::Budget(vec!["P".to_owned()])),
+            Err(message) if message.contains("Ballot type does not match")
         ));
     }
 
