@@ -267,20 +267,12 @@ async fn run() -> Result<(), Box<dyn Error>> {
         match access_mode {
             AccessMode::User => {
                 if let Err(error) = user_access(&http, voter_id, &mut voted_elections).await {
-                    if is_prompt_cancellation(error.as_ref()) {
-                        println!("Operation cancelled; returning to the access menu.");
-                    } else {
-                        return Err(error);
-                    }
+                    handle_access_error(error)?;
                 }
             }
             AccessMode::Admin => {
                 if let Err(error) = admin_access(&http).await {
-                    if is_prompt_cancellation(error.as_ref()) {
-                        println!("Operation cancelled; returning to the access menu.");
-                    } else {
-                        return Err(error);
-                    }
+                    handle_access_error(error)?;
                 }
             }
             AccessMode::Reroll => {
@@ -298,66 +290,65 @@ async fn user_access(
     voter_id: Uuid,
     voted_elections: &mut HashSet<String>,
 ) -> Result<(), Box<dyn Error>> {
+    let elections = fetch_elections(http).await?;
+    if elections.is_empty() {
+        println!("⚠️ No elections are available.");
+    }
+
+    let mut choices: Vec<_> = elections
+        .into_iter()
+        .map(ElectionSelection::Election)
+        .collect();
+    choices.push(ElectionSelection::Back);
+    let ElectionSelection::Election(mut election) = select_prompt(
+        "Select an election",
+        choices,
+        "Choose an election to vote or view its results. Closed elections are marked; Back returns to the access menu. Esc cancels to the access menu.",
+    )?
+    else {
+        return Ok(());
+    };
+
     loop {
-        let elections = fetch_elections(http).await?;
-        if elections.is_empty() {
-            println!("⚠️ No elections are available.");
-        }
-
-        let mut choices: Vec<_> = elections
+        election = fetch_elections(http)
+            .await?
             .into_iter()
-            .map(ElectionSelection::Election)
-            .collect();
-        choices.push(ElectionSelection::Back);
-        let ElectionSelection::Election(mut election) = select_prompt(
-            "Select an election",
-            choices,
-            "Choose an election to vote or view its results. Closed elections are marked; Back returns to the access menu. Esc cancels to the access menu.",
-        )?
-        else {
-            return Ok(());
-        };
+            .find(|candidate| candidate.id == election.id)
+            .ok_or("Selected election is no longer available")?;
 
-        loop {
-            election = fetch_elections(http)
-                .await?
-                .into_iter()
-                .find(|candidate| candidate.id == election.id)
-                .ok_or("Selected election is no longer available")?;
+        let mut actions = Vec::new();
+        if !election.is_closed && !voted_elections.contains(&election.id) {
+            actions.push(UserAction::CastVote);
+        }
+        if election.outcome.is_some() {
+            actions.push(UserAction::ViewResults);
+        }
+        actions.push(UserAction::Back);
 
-            let mut actions = Vec::new();
-            if !election.is_closed && !voted_elections.contains(&election.id) {
-                actions.push(UserAction::CastVote);
+        match select_prompt(
+            "Choose an action",
+            actions,
+            "Choose an available action for this election. Back returns to the access menu; Esc cancels to the access menu.",
+        )? {
+            UserAction::CastVote => {
+                cast_vote(http, &election, voter_id).await?;
+                voted_elections.insert(election.id.clone());
             }
-            if election.outcome.is_some() {
-                actions.push(UserAction::ViewResults);
-            }
-            actions.push(UserAction::Back);
-
-            match select_prompt(
-                "Choose an action",
-                actions,
-                "Choose an available action for this election. Back returns to the access menu; Esc cancels to the access menu.",
-            )? {
-                UserAction::CastVote => {
-                    cast_vote(http, &election, voter_id).await?;
-                    voted_elections.insert(election.id.clone());
+            UserAction::ViewResults => {
+                if let Some(outcome) = &election.outcome {
+                    println!(
+                        "🏆 {}",
+                        format_outcome(&election.manifest, outcome.clone())?
+                    );
                 }
-                UserAction::ViewResults => {
-                    if let Some(outcome) = &election.outcome {
-                        println!(
-                            "🏆 {}",
-                            format_outcome(&election.manifest, outcome.clone())?
-                        );
-                    }
-                }
-                UserAction::Back => return Ok(()),
             }
+            UserAction::Back => return Ok(()),
         }
     }
 }
 
 async fn admin_access(http: &Client) -> Result<(), Box<dyn Error>> {
+    fetch_elections(http).await?;
     loop {
         match select_prompt(
             "Choose an admin action",
@@ -641,6 +632,25 @@ fn is_prompt_cancellation(error: &(dyn Error + 'static)) -> bool {
         error.downcast_ref::<InquireError>(),
         Some(InquireError::OperationCanceled | InquireError::OperationInterrupted)
     )
+}
+
+fn is_server_connection_error(error: &(dyn Error + 'static)) -> bool {
+    error
+        .downcast_ref::<reqwest::Error>()
+        .is_some_and(|error| error.is_connect() || error.is_timeout())
+}
+
+fn handle_access_error(error: Box<dyn Error>) -> Result<(), Box<dyn Error>> {
+    if is_prompt_cancellation(error.as_ref()) {
+        println!("Operation cancelled; returning to the access menu.");
+    } else if is_server_connection_error(error.as_ref()) {
+        eprintln!(
+            "Cannot reach the election server at {SERVER_URL}. Start it with `cargo run -p server`, then choose an access mode to retry."
+        );
+    } else {
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn prompt_nonempty(prompt: &str) -> Result<String, Box<dyn Error>> {
